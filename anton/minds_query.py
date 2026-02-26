@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 
 @dataclass
@@ -24,6 +24,7 @@ class MindsQueryClient:
     mind_name: str
     timeout_s: float = 60.0
     verify_ssl: bool = True
+    progress_fn: Callable[..., object] | None = field(default=None, repr=False)
 
     # ── HTTP helpers ─────────────────────────────────────────────
 
@@ -256,7 +257,7 @@ class MindsQueryClient:
         conversation_id: str | None = None,
         reuse_existing: bool = True,
         poll_s: float = 0.25,
-        max_wait_s: float = 10.0,
+        max_wait_s: float = 300.0,
     ) -> pd.DataFrame:
         """Execute a SQL string via the Mind and return a DataFrame."""
         from io import StringIO
@@ -267,6 +268,8 @@ class MindsQueryClient:
                 if found:
                     csv_text = self._export_csv_text(client, found["conversation_id"], found["item_id"])
                     return pd.read_csv(StringIO(csv_text))
+            if self.progress_fn:
+                self.progress_fn("submitting query...")
             r = client.post(
                 "/api/v1/responses/",
                 json={
@@ -280,6 +283,7 @@ class MindsQueryClient:
             conv_id = conversation_id or self._pick_latest_conversation_id(client)
             target = self._normalize_sql_for_match(sql)
             deadline = time.time() + max_wait_s
+            start = time.time()
             last_items: list[dict[str, Any]] | None = None
             while time.time() < deadline:
                 last_items = self._list_items(client, conv_id)
@@ -287,6 +291,9 @@ class MindsQueryClient:
                 if candidate_id:
                     csv_text = self._export_csv_text(client, conv_id, candidate_id)
                     return pd.read_csv(StringIO(csv_text))
+                if self.progress_fn:
+                    elapsed = int(time.time() - start)
+                    self.progress_fn(f"waiting for query results... {elapsed}s")
                 time.sleep(poll_s)
             raise RuntimeError(
                 f"Timed out waiting for exportable assistant item in conversation {conv_id}. "
@@ -303,7 +310,7 @@ class MindsQueryClient:
         conversation_id: str | None = None,
         reuse_existing: bool = True,
         poll_s: float = 0.25,
-        max_wait_s: float = 10.0,
+        max_wait_s: float = 300.0,
     ) -> pd.DataFrame:
         """Run a native query against a datasource and return the result as a DataFrame.
 

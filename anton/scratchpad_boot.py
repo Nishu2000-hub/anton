@@ -188,6 +188,7 @@ if _minds_connection_raw:
                 api_key=_minds_api_key,
                 mind_name=_minds_mind_name,
                 verify_ssl=_minds_verify_ssl,
+                progress_fn=progress,
             )
             namespace["minds_client"] = _minds_client_instance
     except Exception:
