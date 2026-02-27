@@ -16,7 +16,7 @@ Anton is an advanced AI coworker. You tell it what you need done and it figures 
 
 **macOS / Linux:**
 ```bash
-curl -sSf https://raw.githubusercontent.com/mindsdb/anton/main/install.sh | sh && export PATH="$HOME/.local/bin:$PATH" && anton
+curl -sSf https://raw.githubusercontent.com/mindsdb/anton/main/install.sh | sh && export PATH="$HOME/.local/bin:$PATH" 
 ```
 
 **Windows** (PowerShell):
