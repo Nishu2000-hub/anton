@@ -875,6 +875,11 @@ async def _handle_setup_models(
     """Setup sub-menu: provider, API key, and models."""
     from rich.prompt import Prompt
 
+    from anton.workspace import Workspace as _Workspace
+
+    # Always persist API keys and model settings to global ~/.anton/.env
+    global_ws = _Workspace(Path.home())
+
     console.print()
     console.print("[anton.cyan]Current configuration:[/]")
     console.print(f"  Provider (planning): [bold]{settings.planning_provider}[/]")
@@ -912,7 +917,7 @@ async def _handle_setup_models(
         base_url = base_url.strip()
         if base_url:
             settings.openai_base_url = base_url
-            workspace.set_secret("ANTON_OPENAI_BASE_URL", base_url)
+            global_ws.set_secret("ANTON_OPENAI_BASE_URL", base_url)
 
     # --- API key ---
     key_attr = "anthropic_api_key" if provider == "anthropic" else "openai_api_key"
@@ -945,21 +950,21 @@ async def _handle_setup_models(
         console=console,
     )
 
-    # --- Persist ---
+    # --- Persist to global ~/.anton/.env ---
     settings.planning_provider = provider
     settings.coding_provider = provider
     settings.planning_model = planning_model
     settings.coding_model = coding_model
 
-    workspace.set_secret("ANTON_PLANNING_PROVIDER", provider)
-    workspace.set_secret("ANTON_CODING_PROVIDER", provider)
-    workspace.set_secret("ANTON_PLANNING_MODEL", planning_model)
-    workspace.set_secret("ANTON_CODING_MODEL", coding_model)
+    global_ws.set_secret("ANTON_PLANNING_PROVIDER", provider)
+    global_ws.set_secret("ANTON_CODING_PROVIDER", provider)
+    global_ws.set_secret("ANTON_PLANNING_MODEL", planning_model)
+    global_ws.set_secret("ANTON_CODING_MODEL", coding_model)
 
     if api_key:
         setattr(settings, key_attr, api_key)
         key_name = f"ANTON_{provider.upper()}_API_KEY"
-        workspace.set_secret(key_name, api_key)
+        global_ws.set_secret(key_name, api_key)
 
     # Validate that we actually have an API key for the chosen provider
     final_key = getattr(settings, key_attr)

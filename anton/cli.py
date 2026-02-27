@@ -169,7 +169,10 @@ def _ensure_workspace(settings) -> None:
 
     # 1. Local .anton exists → use it
     if local_ws.is_initialized():
+        # Local env wins, then global fills in anything missing (API keys, etc.)
         local_ws.apply_env_to_process()
+        if local_path != global_path and global_ws.is_initialized():
+            global_ws.apply_env_to_process()
         return
 
     # 2. Global ~/.anton exists and we're not already pointing at $HOME → use it
@@ -252,10 +255,10 @@ def _ensure_api_key(settings) -> None:
 
     console.print()
 
-    # Use the workspace secret vault to store the key securely
+    # Always store API keys and model settings in global ~/.anton/.env
     from anton.workspace import Workspace
 
-    ws = Workspace(settings.workspace_path)
+    ws = Workspace(Path.home())
 
     # For OpenAI-compatible, ask for the base URL first
     if provider == "openai-compatible":
