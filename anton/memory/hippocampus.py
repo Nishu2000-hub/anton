@@ -18,8 +18,8 @@ Each Hippocampus instance manages one scope's files:
 
 from __future__ import annotations
 
-import fcntl
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -344,7 +344,7 @@ class Hippocampus:
     # --- Infrastructure ---
 
     def _encode_with_lock(self, path: Path, text: str, mode: str = "append") -> None:
-        """Write with file locking (fcntl.flock).
+        """Write with file locking (fcntl.flock on Unix, no-op on Windows).
 
         Prevents corruption from concurrent Anton sessions writing to
         global memory — like synaptic tagging ensuring encoding fidelity
@@ -356,22 +356,30 @@ class Hippocampus:
             # Atomic write via temp file + rename
             tmp_path = path.with_suffix(path.suffix + ".tmp")
             with open(tmp_path, "w", encoding="utf-8") as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                if sys.platform != "win32":
+                    import fcntl
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                 try:
                     f.write(text)
                     f.flush()
                 finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    if sys.platform != "win32":
+                        import fcntl
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
             tmp_path.rename(path)
         else:
             # Append mode
             with open(path, "a", encoding="utf-8") as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                if sys.platform != "win32":
+                    import fcntl
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                 try:
                     f.write(text)
                     f.flush()
                 finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    if sys.platform != "win32":
+                        import fcntl
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     @staticmethod
     def _sanitize_slug(name: str) -> str:

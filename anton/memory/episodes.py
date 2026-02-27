@@ -63,13 +63,17 @@ class EpisodicMemory:
         if not self._enabled or self._file is None:
             return
         try:
-            import fcntl
+            import sys
 
             line = json.dumps(asdict(episode), ensure_ascii=False) + "\n"
             with self._file.open("a", encoding="utf-8") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                f.write(line)
-                fcntl.flock(f, fcntl.LOCK_UN)
+                if sys.platform != "win32":
+                    import fcntl
+                    fcntl.flock(f, fcntl.LOCK_EX)
+                    f.write(line)
+                    fcntl.flock(f, fcntl.LOCK_UN)
+                else:
+                    f.write(line)
         except Exception:
             pass  # Fire-and-forget
 
