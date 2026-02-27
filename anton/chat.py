@@ -34,6 +34,7 @@ from anton.llm.provider import (
 from anton.scratchpad import ScratchpadManager
 from anton.tools import (
     MEMORIZE_TOOL,
+    RECALL_TOOL,
     SCRATCHPAD_TOOL,
     dispatch_tool,
     format_cell_result,
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
     from anton.context.self_awareness import SelfAwarenessContext
     from anton.llm.client import LLMClient
     from anton.memory.cortex import Cortex
+    from anton.memory.episodes import EpisodicMemory
     from anton.workspace import Workspace
 
 
@@ -71,6 +73,7 @@ class ChatSession:
         *,
         self_awareness: SelfAwarenessContext | None = None,
         cortex: Cortex | None = None,
+        episodic: EpisodicMemory | None = None,
         runtime_context: str = "",
         workspace: Workspace | None = None,
         console: Console | None = None,
@@ -80,6 +83,7 @@ class ChatSession:
         self._llm = llm_client
         self._self_awareness = self_awareness
         self._cortex = cortex
+        self._episodic = episodic
         self._runtime_context = runtime_context
         self._workspace = workspace
         self._console = console
@@ -197,6 +201,8 @@ class ChatSession:
             # Legacy fallback
             from anton.tools import MEMORIZE_TOOL as _MT
             tools.append(_MT)
+        if self._episodic is not None and self._episodic.enabled:
+            tools.append(RECALL_TOOL)
         return tools
 
     async def close(self) -> None:
@@ -389,8 +395,22 @@ class ChatSession:
         """Streaming version of turn(). Yields events as they arrive."""
         self._history.append({"role": "user", "content": user_input})
 
+        # Log user input to episodic memory
+        if self._episodic is not None:
+            content = user_input if isinstance(user_input, str) else str(user_input)[:2000]
+            self._episodic.log_turn(self._turn_count + 1, "user", content)
+
+        assistant_text_parts: list[str] = []
         async for event in self._stream_and_handle_tools():
+            if isinstance(event, StreamTextDelta):
+                assistant_text_parts.append(event.text)
             yield event
+
+        # Log assistant response to episodic memory
+        if self._episodic is not None and assistant_text_parts:
+            self._episodic.log_turn(
+                self._turn_count + 1, "assistant", "".join(assistant_text_parts)[:2000],
+            )
 
         # Identity extraction (Default Mode Network — every 5 turns)
         self._turn_count += 1
@@ -486,6 +506,14 @@ class ChatSession:
             # Process each tool call
             tool_results: list[dict] = []
             for tc in llm_response.tool_calls:
+                # Log tool call to episodic memory
+                if self._episodic is not None:
+                    tc_desc = str(tc.input)[:500]
+                    self._episodic.log_turn(
+                        self._turn_count + 1, "tool_call", tc_desc,
+                        tool=tc.name,
+                    )
+
                 try:
                     if tc.name == "scratchpad" and tc.input.get("action") == "exec":
                         # Inline streaming exec — yields progress events
@@ -509,6 +537,14 @@ class ChatSession:
                                 elif isinstance(item, Cell):
                                     cell = item
                             result_text = format_cell_result(cell) if cell else "No result produced."
+
+                            # Log scratchpad cell to episodic memory
+                            if self._episodic is not None and cell is not None:
+                                self._episodic.log_turn(
+                                    self._turn_count + 1, "scratchpad",
+                                    (cell.stdout or "")[:2000],
+                                    description=description,
+                                )
                     else:
                         result_text = await dispatch_tool(self, tc.name, tc.input)
                         if tc.name == "scratchpad" and tc.input.get("action") == "dump":
@@ -520,6 +556,13 @@ class ChatSession:
                             )
                 except Exception as exc:
                     result_text = f"Tool '{tc.name}' failed: {exc}"
+
+                # Log tool result to episodic memory
+                if self._episodic is not None:
+                    self._episodic.log_turn(
+                        self._turn_count + 1, "tool_result", result_text[:2000],
+                        tool=tc.name,
+                    )
 
                 result_text = _apply_error_tracking(
                     result_text, tc.name, error_streak, resilience_nudged,
@@ -648,6 +691,7 @@ def _rebuild_session(
     cortex,
     workspace,
     console: Console,
+    episodic: EpisodicMemory | None = None,
 ) -> ChatSession:
     """Rebuild LLMClient + ChatSession after settings change."""
     from anton.llm.client import LLMClient
@@ -674,6 +718,7 @@ def _rebuild_session(
         state["llm_client"],
         self_awareness=self_awareness,
         cortex=cortex,
+        episodic=episodic,
         runtime_context=runtime_context,
         workspace=workspace,
         console=console,
@@ -685,12 +730,10 @@ def _rebuild_session(
 def _handle_memory(
     console: Console,
     settings: AntonSettings,
-    workspace: Workspace,
     cortex,
+    episodic: EpisodicMemory | None = None,
 ) -> None:
-    """Show memory status and optionally change the memory mode."""
-    from rich.prompt import Prompt
-
+    """Show memory status — read-only dashboard."""
     console.print()
     console.print("[anton.cyan]Memory Status[/]")
     console.print()
@@ -764,39 +807,16 @@ def _handle_memory(
         console.print("  [anton.warning]Compaction needed (>50 entries in a scope)[/]")
     console.print()
 
-    # --- Offer to change mode ---
-    change = Prompt.ask(
-        "Change memory mode? (y/n)",
-        choices=["y", "n"],
-        default="n",
-        console=console,
-    )
-    if change == "y":
-        console.print()
-        console.print("[anton.cyan]Memory modes:[/]")
-        console.print(r"  [bold]1[/]  Autopilot — Anton decides what to remember       [dim]\[recommended][/]")
-        console.print(r"  [bold]2[/]  Co-pilot — save obvious, confirm ambiguous        [dim]\[selective][/]")
-        console.print(r"  [bold]3[/]  Off — never save memory (still reads existing)    [dim]\[suppressed][/]")
+    # --- Episodic memory stats ---
+    if episodic is not None:
+        status = "[bold]ON[/]" if episodic.enabled else "[dim]OFF[/]"
+        sessions = episodic.session_count()
+        console.print(f"  [anton.cyan]Episodic Memory[/]")
+        console.print(f"    Status:    {status}")
+        console.print(f"    Sessions:  {sessions}")
         console.print()
 
-        mode_map = {"1": "autopilot", "2": "copilot", "3": "off"}
-        current_mode_num = {"autopilot": "1", "copilot": "2", "off": "3"}.get(
-            settings.memory_mode, "1"
-        )
-        mode_choice = Prompt.ask(
-            "Memory mode",
-            choices=["1", "2", "3"],
-            default=current_mode_num,
-            console=console,
-        )
-        memory_mode = mode_map[mode_choice]
-        settings.memory_mode = memory_mode
-        workspace.set_secret("ANTON_MEMORY_MODE", memory_mode)
-        cortex.mode = memory_mode
-
-        console.print()
-        console.print(f"[anton.success]Memory mode set to: {memory_mode}[/]")
-
+    console.print("[dim]  Use /setup > Memory to change configuration.[/]")
     console.print()
 
 
@@ -808,8 +828,47 @@ async def _handle_setup(
     self_awareness,
     cortex,
     session: ChatSession,
+    episodic: EpisodicMemory | None = None,
 ) -> ChatSession:
-    """Interactive setup wizard — reconfigure provider, model, and API key."""
+    """Interactive setup wizard with sub-menu: Models or Memory."""
+    from rich.prompt import Prompt
+
+    console.print()
+    console.print("[anton.cyan]/setup[/]")
+    console.print()
+    console.print("  What do you want to configure?")
+    console.print("    [bold]1[/]  Models — provider, API key, planning & coding models")
+    console.print("    [bold]2[/]  Memory — memory mode and episodic memory")
+    console.print()
+
+    top_choice = Prompt.ask(
+        "Select",
+        choices=["1", "2"],
+        default="1",
+        console=console,
+    )
+
+    if top_choice == "1":
+        return await _handle_setup_models(
+            console, settings, workspace, state,
+            self_awareness, cortex, session, episodic=episodic,
+        )
+    else:
+        _handle_setup_memory(console, settings, workspace, cortex, episodic=episodic)
+        return session
+
+
+async def _handle_setup_models(
+    console: Console,
+    settings: AntonSettings,
+    workspace: Workspace,
+    state: dict,
+    self_awareness,
+    cortex,
+    session: ChatSession,
+    episodic: EpisodicMemory | None = None,
+) -> ChatSession:
+    """Setup sub-menu: provider, API key, and models."""
     from rich.prompt import Prompt
 
     console.print()
@@ -882,38 +941,16 @@ async def _handle_setup(
         console=console,
     )
 
-    # --- Memory Mode ---
-    console.print()
-    console.print("[anton.cyan]Memory modes:[/]")
-    console.print(r"  [bold]1[/]  Autopilot — Anton decides what to remember       [dim]\[recommended][/]")
-    console.print(r"  [bold]2[/]  Co-pilot — save obvious, confirm ambiguous        [dim]\[selective][/]")
-    console.print(r"  [bold]3[/]  Off — never save memory (still reads existing)    [dim]\[suppressed][/]")
-    console.print()
-
-    mode_map = {"1": "autopilot", "2": "copilot", "3": "off"}
-    current_mode_num = {"autopilot": "1", "copilot": "2", "off": "3"}.get(
-        settings.memory_mode, "1"
-    )
-    mode_choice = Prompt.ask(
-        "Memory mode",
-        choices=["1", "2", "3"],
-        default=current_mode_num,
-        console=console,
-    )
-    memory_mode = mode_map[mode_choice]
-
     # --- Persist ---
     settings.planning_provider = provider
     settings.coding_provider = provider
     settings.planning_model = planning_model
     settings.coding_model = coding_model
-    settings.memory_mode = memory_mode
 
     workspace.set_secret("ANTON_PLANNING_PROVIDER", provider)
     workspace.set_secret("ANTON_CODING_PROVIDER", provider)
     workspace.set_secret("ANTON_PLANNING_MODEL", planning_model)
     workspace.set_secret("ANTON_CODING_MODEL", coding_model)
-    workspace.set_secret("ANTON_MEMORY_MODE", memory_mode)
 
     if api_key:
         setattr(settings, key_attr, api_key)
@@ -939,7 +976,68 @@ async def _handle_setup(
         cortex=cortex,
         workspace=workspace,
         console=console,
+        episodic=episodic,
     )
+
+
+def _handle_setup_memory(
+    console: Console,
+    settings: AntonSettings,
+    workspace: Workspace,
+    cortex,
+    episodic: EpisodicMemory | None = None,
+) -> None:
+    """Setup sub-menu: memory mode and episodic memory toggle."""
+    from rich.prompt import Prompt
+
+    console.print()
+    console.print("[anton.cyan]Memory configuration[/]")
+    console.print()
+
+    # --- Memory mode ---
+    console.print("  Memory mode:")
+    console.print(r"    [bold]1[/]  Autopilot — Anton decides what to remember       [dim]\[recommended][/]")
+    console.print(r"    [bold]2[/]  Co-pilot — save obvious, confirm ambiguous        [dim]\[selective][/]")
+    console.print(r"    [bold]3[/]  Off — never save memory (still reads existing)    [dim]\[suppressed][/]")
+    console.print()
+
+    mode_map = {"1": "autopilot", "2": "copilot", "3": "off"}
+    current_mode_num = {"autopilot": "1", "copilot": "2", "off": "3"}.get(
+        settings.memory_mode, "1"
+    )
+    mode_choice = Prompt.ask(
+        "  Memory mode",
+        choices=["1", "2", "3"],
+        default=current_mode_num,
+        console=console,
+    )
+    memory_mode = mode_map[mode_choice]
+    settings.memory_mode = memory_mode
+    workspace.set_secret("ANTON_MEMORY_MODE", memory_mode)
+    if cortex is not None:
+        cortex.mode = memory_mode
+
+    # --- Episodic memory toggle ---
+    if episodic is not None:
+        console.print()
+        ep_status = "ON" if episodic.enabled else "OFF"
+        console.print(f"  Episodic memory (conversation archive): Currently [bold]{ep_status}[/]")
+        toggle = Prompt.ask(
+            "  Toggle episodic memory? (y/n)",
+            choices=["y", "n"],
+            default="n",
+            console=console,
+        )
+        if toggle == "y":
+            new_state = not episodic.enabled
+            episodic.enabled = new_state
+            settings.episodic_memory = new_state
+            workspace.set_secret("ANTON_EPISODIC_MEMORY", "true" if new_state else "false")
+            console.print(f"  Episodic memory: [bold]{'ON' if new_state else 'OFF'}[/]")
+
+    console.print()
+    console.print("[anton.success]Configuration updated.[/]")
+    console.print()
 
 
 def _format_file_message(text: str, paths: list[Path], console: Console) -> str:
@@ -1092,8 +1190,8 @@ def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
     console.print("[anton.cyan]Available commands:[/]")
-    console.print("  [bold]/setup[/]       — Configure LLM provider, model, and API key")
-    console.print("  [bold]/memory[/]      — Show memory status and change memory mode")
+    console.print("  [bold]/setup[/]       — Configure models or memory settings")
+    console.print("  [bold]/memory[/]      — Show memory status dashboard")
     console.print("  [bold]/paste[/]       — Attach clipboard image to your message")
     console.print("  [bold]/help[/]        — Show this help message")
     console.print("  [bold]exit[/]         — Quit the chat")
@@ -1243,6 +1341,14 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     if cortex.needs_compaction():
         asyncio.create_task(cortex.compact_all())
 
+    # --- Episodic memory ---
+    from anton.memory.episodes import EpisodicMemory
+
+    episodes_dir = settings.workspace_path / ".anton" / "episodes"
+    episodic = EpisodicMemory(episodes_dir, enabled=settings.episodic_memory)
+    if episodic.enabled:
+        episodic.start_session()
+
     # Clean up old clipboard uploads
     uploads_dir = Path(settings.workspace_path) / ".anton" / "uploads"
     cleanup_old_uploads(uploads_dir)
@@ -1264,6 +1370,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         state["llm_client"],
         self_awareness=self_awareness,
         cortex=cortex,
+        episodic=episodic,
         runtime_context=runtime_context,
         workspace=workspace,
         console=console,
@@ -1375,10 +1482,11 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                     session = await _handle_setup(
                         console, settings, workspace, state,
                         self_awareness, cortex, session,
+                        episodic=episodic,
                     )
                     continue
                 elif cmd == "/memory":
-                    _handle_memory(console, settings, workspace, cortex)
+                    _handle_memory(console, settings, cortex, episodic=episodic)
                     continue
                 elif cmd == "/help":
                     _print_slash_help(console)
@@ -1470,6 +1578,7 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                     cortex=cortex,
                     workspace=workspace,
                     console=console,
+                    episodic=episodic,
                 )
             except KeyboardInterrupt:
                 display.abort()

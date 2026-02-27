@@ -111,6 +111,34 @@ MEMORIZE_TOOL = {
     },
 }
 
+RECALL_TOOL = {
+    "name": "recall",
+    "description": (
+        "Search your episodic memory — a complete archive of past conversations. "
+        "Use this when the user asks about previous sessions, past work, or anything "
+        "that happened in earlier conversations.\n\n"
+        "Returns timestamped episodes matching the query (newest first)."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search term to find in past conversations.",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum episodes to return (default 20).",
+            },
+            "days_back": {
+                "type": "integer",
+                "description": "Only search episodes from the last N days.",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
 SCRATCHPAD_TOOL = {
     "name": "scratchpad",
     "description": (
@@ -182,6 +210,24 @@ SCRATCHPAD_TOOL = {
 # ---------------------------------------------------------------------------
 # Tool handlers
 # ---------------------------------------------------------------------------
+
+async def handle_recall(session: ChatSession, tc_input: dict) -> str:
+    """Process a recall tool call — search episodic memory."""
+    if session._episodic is None or not session._episodic.enabled:
+        return "Episodic memory is not available."
+
+    query = tc_input.get("query", "")
+    if not query:
+        return "No query provided."
+
+    kwargs: dict = {}
+    if "max_results" in tc_input:
+        kwargs["max_results"] = int(tc_input["max_results"])
+    if "days_back" in tc_input:
+        kwargs["days_back"] = int(tc_input["days_back"])
+
+    return session._episodic.recall_formatted(query, **kwargs)
+
 
 async def handle_memorize(session: ChatSession, tc_input: dict) -> str:
     """Process a memorize tool call and return a result string.
@@ -366,5 +412,7 @@ async def dispatch_tool(session: ChatSession, tool_name: str, tc_input: dict) ->
         return await handle_memorize(session, tc_input)
     elif tool_name == "scratchpad":
         return await handle_scratchpad(session, tc_input)
+    elif tool_name == "recall":
+        return await handle_recall(session, tc_input)
     else:
         return f"Unknown tool: {tool_name}"

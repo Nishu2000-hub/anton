@@ -26,13 +26,23 @@ Anton has a brain-inspired long-term memory architecture. Every module is named 
              │
              ▼
     ┌──────────────────────────────────────────────┐
-    │              MEMORY FILES (on disk)            │
+    │         SEMANTIC MEMORY FILES (on disk)        │
     │                                                │
     │  profile.md   ← Identity (Default Mode Network)│
     │  rules.md     ← Behavioral gates (Basal Ganglia)│
     │  lessons.md   ← Semantic facts (Temporal Lobe) │
     │  topics/*.md  ← Domain expertise (Association  │
     │                 Areas), loaded on demand        │
+    └──────────────────────────────────────────────┘
+
+    ┌──────────────────────────────────────────────┐
+    │      EPISODIC MEMORY (episodes.py)            │
+    │      Medial Temporal Lobe — raw experience    │
+    │                                                │
+    │  episodes/*.jsonl  ← One file per session     │
+    │  Timestamped log of every turn, tool call,    │
+    │  and scratchpad execution. Searchable via     │
+    │  the `recall` tool.                           │
     └──────────────────────────────────────────────┘
 ```
 
@@ -42,6 +52,7 @@ Anton has a brain-inspired long-term memory architecture. Every module is named 
 |---|---|---|
 | **Hippocampus** (CA3/CA1) | `hippocampus.py` | The storage engine. Reads and writes individual memory traces (engrams) to markdown files. One instance per scope — it doesn't decide *what* to remember, just executes storage and retrieval. |
 | **Prefrontal Cortex** (dlPFC/vmPFC) | `cortex.py` | The executive coordinator. Manages two hippocampi (global + project), decides which memories to load into the LLM's context window, gates whether new memories need confirmation. |
+| **Medial Temporal Lobe** (episodic) | `episodes.py` | Raw episodic memory. Logs every conversation turn as timestamped JSONL — user input, assistant responses, tool calls, scratchpad output. Searchable via the `recall` tool. Like HSAM: never forgets. |
 | **Hippocampal Replay** (SWS consolidation) | `consolidator.py` | After a scratchpad session ends, replays what happened in compressed form and extracts durable lessons via a fast LLM call. Like sleep — offline, post-hoc, selective. |
 | **Reconsolidation** (Nader et al.) | `reconsolidator.py` | One-time migration. When old memory formats are reactivated, they enter a labile state and get re-encoded in the new format. Preserves content, updates structure. |
 | **Medial PFC / Default Mode Network** | `profile.md` | Always-on self-model. Identity facts (name, timezone, preferences) that contextualize all processing — you don't "look up" your own name. |
@@ -68,6 +79,9 @@ Anton has a brain-inspired long-term memory architecture. Every module is named 
 │   ├── lessons.md                     Project-specific knowledge
 │   └── topics/
 │       └── *.md
+├── episodes/                          EPISODIC MEMORY (conversation archive)
+│   ├── 20260227_143052.jsonl          One file per session (YYYYMMDD_HHMMSS)
+│   └── 20260228_091522.jsonl
 ├── anton.md                           User-written project context (unchanged)
 └── .env                               Secrets (unchanged)
 ```
@@ -121,6 +135,58 @@ Each entry can carry HTML-comment metadata:
 | `source` | `user`, `consolidation`, `llm` | Where the memory originated. User-sourced = explicit tool call or user request. Consolidation = extracted from scratchpad replay. LLM = the model decided to save it mid-conversation. |
 | `ts` | `YYYY-MM-DD` | When the memory was encoded. Used for recency ordering in lessons. |
 | `topic` | slug string | Topic tag for lessons. Used to cross-file into `topics/{slug}.md`. |
+
+## Episodic Memory — Raw Conversation Archive
+
+Episodic memory is a complete, timestamped log of everything that happens in a conversation. Brain analog: the **Medial Temporal Lobe** episodic memory system.
+
+### File Format
+
+Each session produces one JSONL file in `.anton/episodes/`:
+
+```jsonl
+{"ts":"2026-02-27T14:30:52","session":"20260227_143052","turn":1,"role":"user","content":"What's the bitcoin price?","meta":{}}
+{"ts":"2026-02-27T14:30:55","session":"20260227_143052","turn":1,"role":"assistant","content":"Let me check that.","meta":{}}
+{"ts":"2026-02-27T14:31:00","session":"20260227_143052","turn":1,"role":"tool_call","content":"{'action': 'exec', ...}","meta":{"tool":"scratchpad"}}
+{"ts":"2026-02-27T14:31:02","session":"20260227_143052","turn":1,"role":"scratchpad","content":"$67,432","meta":{"description":"Fetch BTC"}}
+{"ts":"2026-02-27T14:31:03","session":"20260227_143052","turn":1,"role":"tool_result","content":"[output]\n$67,432","meta":{"tool":"scratchpad"}}
+```
+
+### Roles
+
+| Role | What's Logged |
+|------|---------------|
+| `user` | User's input (text or stringified multimodal content) |
+| `assistant` | Anton's text response |
+| `tool_call` | Tool invocation input (truncated to 500 chars) |
+| `tool_result` | Tool output (truncated to 2000 chars) |
+| `scratchpad` | Scratchpad cell stdout (truncated to 2000 chars) |
+
+### The `recall` Tool
+
+The LLM has a `recall` tool that searches episodic memory. It's included in the tool list when episodic memory is enabled.
+
+```json
+{
+  "name": "recall",
+  "input": {
+    "query": "bitcoin",
+    "max_results": 20,
+    "days_back": 30
+  }
+}
+```
+
+Search is case-insensitive substring matching across all JSONL files, newest-first. The `days_back` parameter filters by session file timestamp.
+
+**When recall happens:** The LLM decides to call the `recall` tool during conversation — typically when the user asks about previous sessions, past work, or "what did we talk about last time?" It's a standard tool call like `scratchpad` or `memorize`, not automatic.
+
+### Design Principles
+
+- **Fire-and-forget**: `log()` catches all exceptions and never raises. Logging never blocks the conversation.
+- **File locking**: Uses `fcntl.flock(LOCK_EX)` for safe concurrent appends.
+- **Truncation**: Tool inputs capped at 500 chars, results at 2000 chars — prevents JSONL bloat from large scratchpad outputs.
+- **Toggle**: Controlled by `ANTON_EPISODIC_MEMORY` env var or `/setup` > Memory. Default: ON.
 
 ## How Memory Flows Through a Session
 
@@ -200,7 +266,7 @@ Like the Locus Coeruleus-Norepinephrine system that controls how aggressively th
 | **copilot** | Auto-save high-confidence memories, confirm ambiguous ones after the answer | Moderate NE — selective encoding |
 | **off** | Never save (still reads existing memory) | Suppressed — encoding blocked |
 
-Configure via `/setup`, `/memory`, or the `ANTON_MEMORY_MODE` environment variable.
+Configure via `/setup` > Memory, or the `ANTON_MEMORY_MODE` environment variable.
 
 **The encoding gate logic** (in `cortex.py`):
 ```python
@@ -353,6 +419,7 @@ Source (user/LLM/consolidation)
 anton/memory/
 ├── hippocampus.py      Engram + Hippocampus class
 ├── cortex.py           Cortex class
+├── episodes.py         Episode + EpisodicMemory class
 ├── consolidator.py     Consolidator class
 ├── reconsolidator.py   needs_reconsolidation() + reconsolidate() functions
 ├── learnings.py        [legacy] LearningStore — replaced by Hippocampus
@@ -393,6 +460,19 @@ The Cortex manages two Hippocampus instances and orchestrates all memory operati
 | `compact_all()` | LLM-assisted deduplication + merge on all oversized files |
 | `maybe_update_identity(message)` | Extract identity facts from user message (fast model, background) |
 
+### `episodes.py` — Episodic Memory
+
+The EpisodicMemory handles raw conversation logging and recall.
+
+| Method | Purpose |
+|---|---|
+| `start_session()` | Create a new JSONL file, return session ID |
+| `log(episode)` | Append an Episode to the current session file (fire-and-forget) |
+| `log_turn(turn, role, content, **meta)` | Convenience wrapper — builds Episode and calls log() |
+| `recall(query, max_results, days_back)` | Search all JSONL files for matching episodes (newest first) |
+| `recall_formatted(query, **kwargs)` | Return human-readable string of matching episodes |
+| `session_count()` | Count the number of session JSONL files |
+
 ### `consolidator.py` — Scratchpad Replay
 
 | Method | Purpose |
@@ -414,11 +494,14 @@ The memory system is wired into `ChatSession` and `_chat_loop()`:
 ```
 1. _chat_loop() startup:
    → Creates Cortex(global_dir, project_dir, mode, llm)
+   → Creates EpisodicMemory(episodes_dir, enabled=settings.episodic_memory)
+   → Starts episodic session if enabled
    → Runs reconsolidation if needed
    → Fires background compaction if needed
 
 2. ChatSession.__init__():
    → Stores cortex as self._cortex
+   → Stores episodic as self._episodic
    → Initializes self._pending_memory_confirmations = []
 
 3. ChatSession._build_system_prompt():
@@ -427,25 +510,41 @@ The memory system is wired into `ChatSession` and `_chat_loop()`:
 4. ChatSession._build_tools():
    → Calls cortex.get_scratchpad_context()  →  appended to scratchpad tool desc
    → Includes MEMORIZE_TOOL in tool list
+   → Includes RECALL_TOOL when episodic memory is enabled
 
 5. Tool dispatch (tools.py):
    → "memorize" → handle_memorize() → cortex.encode()
+   → "recall" → handle_recall() → episodic.recall_formatted()
 
-6. After tool loop (_stream_and_handle_tools):
+6. turn_stream():
+   → Logs user input to episodic memory (before LLM call)
+   → Logs assistant response to episodic memory (after LLM call)
+
+7. _stream_and_handle_tools() tool loop:
+   → Logs each tool_call to episodic memory
+   → Logs each tool_result to episodic memory
+   → Logs scratchpad cell output to episodic memory
    → _maybe_consolidate_scratchpads() → background asyncio.create_task
 
-7. After turn (turn_stream):
+8. After turn (turn_stream):
    → Every 5 turns → cortex.maybe_update_identity() as background task
 
-8. Before user prompt (_chat_loop):
+9. Before user prompt (_chat_loop):
    → Show pending memory confirmations → user approves/rejects/picks
 
-9. /setup wizard:
-   → Memory mode selection (autopilot/copilot/off)
-   → Persisted to ANTON_MEMORY_MODE in .anton/.env
+10. /setup wizard (sub-menu):
+    → Option 1: Models — provider, API key, planning & coding models
+    → Option 2: Memory — memory mode (autopilot/copilot/off) + episodic toggle
+    → Persisted to ANTON_MEMORY_MODE and ANTON_EPISODIC_MEMORY in .anton/.env
 
-10. _rebuild_session():
+11. /memory (read-only dashboard):
+    → Shows semantic memory counts (global/project rules, lessons, topics)
+    → Shows episodic memory status (ON/OFF) and session count
+    → No configuration prompts — directs to /setup > Memory
+
+12. _rebuild_session():
     → Updates cortex._llm and cortex.mode when settings change
+    → Propagates episodic memory instance
 ```
 
 ## Context Budget Summary
@@ -459,4 +558,5 @@ The memory system is wired into `ChatSession` and `_chat_loop()`:
 | Project lessons | ATL semantics | ~1000 tokens | Always (most recent first) |
 | Scratchpad wisdom | Procedural memory | ~500 tokens | Scratchpad active (tool desc) |
 | Topic files | Cortical association | Unlimited | On demand |
+| Episodic recall | MTL episodic | Variable | On demand (recall tool) |
 | **Total in prompt** | **Working memory** | **~5800 tokens** | ~3% of 200K context |

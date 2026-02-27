@@ -28,6 +28,7 @@ class _ToolActivity:
 _TOOL_LABELS: dict[str, str] = {
     "scratchpad": "Scratchpad",
     "memorize": "Memory",
+    "recall": "Recall",
 }
 
 _MAX_DESC = 60

@@ -40,6 +40,8 @@ class AntonSettings(BaseSettings):
 
     memory_mode: str = "autopilot"  # autopilot | copilot | off
 
+    episodic_memory: bool = True  # episodic memory archive — on by default
+
     theme: str = "auto"
 
     disable_autoupdates: bool = False

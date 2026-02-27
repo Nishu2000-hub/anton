@@ -87,9 +87,17 @@ You can always ask Anton to explain what it did. Ask it to dump its scratchpad a
 
 ## Memory System
 
-Anton remembers your identity, behavioral rules (always/never/when), semantic lessons, and domain expertise — stored as human-readable markdown at two scopes (global and per-project). After scratchpad sessions, it automatically extracts lessons from errors and long runs.
+Anton has two complementary memory systems:
 
-Configure the encoding mode via `/setup` or `/memory` or `ANTON_MEMORY_MODE` (autopilot / copilot / off). Default: **autopilot** — Anton decides what to remember, no confirmation needed.
+**Semantic memory** — Rules, lessons, identity, and domain expertise stored as human-readable markdown at two scopes (global and per-project). After scratchpad sessions, it automatically extracts lessons from errors and long runs.
+
+**Episodic memory** — A complete, timestamped, searchable archive of every conversation. Stored as JSONL in `.anton/episodes/`, one file per session. Anton can search past conversations using its `recall` tool when you ask about previous sessions or past work.
+
+Configure memory via `/setup` > Memory, or set environment variables:
+- `ANTON_MEMORY_MODE` — Semantic memory encoding mode (autopilot / copilot / off). Default: **autopilot**.
+- `ANTON_EPISODIC_MEMORY` — Episodic memory archive (true / false). Default: **true**.
+
+Use `/memory` to view a read-only dashboard of both memory systems.
 
 For the full architecture, file formats, and developer guide, see **[anton/README.md](anton/README.md)**.
 
@@ -114,6 +122,7 @@ ANTON_ANTHROPIC_API_KEY  # Anthropic API key
 ANTON_PLANNING_MODEL     # Model for planning (default: claude-sonnet-4-6)
 ANTON_CODING_MODEL       # Model for coding (default: claude-haiku-4-5-20251001)
 ANTON_MEMORY_MODE        # Memory encoding mode (default: autopilot)
+ANTON_EPISODIC_MEMORY    # Episodic memory archive (default: true)
 ```
 
 Env loading order: `cwd/.env` → `.anton/.env` → `~/.anton/.env`

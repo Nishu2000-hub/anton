@@ -1,0 +1,175 @@
+"""Episodic memory — timestamped, searchable archive of conversations.
+
+Brain analog: Medial Temporal Lobe episodic memory system.  Logs every
+turn (user input, assistant response, tool calls, scratchpad cells) as
+JSONL.  Fire-and-forget: never blocks anything.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+
+@dataclass
+class Episode:
+    ts: str  # ISO 8601
+    session: str  # Session ID (matches filename stem)
+    turn: int
+    role: str  # "user" | "assistant" | "tool_call" | "tool_result" | "scratchpad"
+    content: str
+    meta: dict = field(default_factory=dict)
+
+
+_MAX_TOOL_INPUT = 500
+_MAX_TOOL_RESULT = 2000
+
+
+class EpisodicMemory:
+    """Append-only conversation archive stored as per-session JSONL files."""
+
+    def __init__(self, episodes_dir: Path, *, enabled: bool = True) -> None:
+        self._dir = episodes_dir
+        self._enabled = enabled
+        self._session_id: str | None = None
+        self._file: Path | None = None
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        self._enabled = value
+
+    def start_session(self) -> str:
+        """Create a new JSONL file for this session and return the session ID."""
+        now = datetime.now(timezone.utc)
+        self._session_id = now.strftime("%Y%m%d_%H%M%S")
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self._file = self._dir / f"{self._session_id}.jsonl"
+        self._file.touch()
+        return self._session_id
+
+    def log(self, episode: Episode) -> None:
+        """Append an episode to the current session file.  Never raises."""
+        if not self._enabled or self._file is None:
+            return
+        try:
+            import fcntl
+
+            line = json.dumps(asdict(episode), ensure_ascii=False) + "\n"
+            with self._file.open("a", encoding="utf-8") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                f.write(line)
+                fcntl.flock(f, fcntl.LOCK_UN)
+        except Exception:
+            pass  # Fire-and-forget
+
+    def log_turn(
+        self,
+        turn: int,
+        role: str,
+        content: str,
+        **meta: object,
+    ) -> None:
+        """Convenience wrapper around log()."""
+        if not self._enabled or self._session_id is None:
+            return
+        # Truncate tool content
+        if role == "tool_call":
+            content = content[:_MAX_TOOL_INPUT]
+        elif role == "tool_result":
+            content = content[:_MAX_TOOL_RESULT]
+
+        self.log(Episode(
+            ts=datetime.now(timezone.utc).isoformat(),
+            session=self._session_id,
+            turn=turn,
+            role=role,
+            content=content,
+            meta=dict(meta),
+        ))
+
+    def recall(
+        self,
+        query: str,
+        *,
+        max_results: int = 20,
+        days_back: int | None = None,
+    ) -> list[Episode]:
+        """Search episodes for *query* (case-insensitive substring match).
+
+        Returns newest-first, capped at *max_results*.
+        """
+        if not self._dir.is_dir():
+            return []
+
+        cutoff: datetime | None = None
+        if days_back is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
+
+        pattern = re.compile(re.escape(query), re.IGNORECASE)
+        matches: list[Episode] = []
+
+        # Iterate files newest-first (filenames sort chronologically)
+        for path in sorted(self._dir.glob("*.jsonl"), reverse=True):
+            if cutoff is not None:
+                # Quick filename check: 20260227_143052.jsonl
+                stem = path.stem
+                try:
+                    file_dt = datetime.strptime(stem, "%Y%m%d_%H%M%S").replace(
+                        tzinfo=timezone.utc,
+                    )
+                    if file_dt < cutoff:
+                        continue
+                except ValueError:
+                    pass
+
+            try:
+                lines = path.read_text(encoding="utf-8").strip().splitlines()
+            except Exception:
+                continue
+
+            # Reverse lines so newest episodes come first within a file
+            for line in reversed(lines):
+                if not line.strip():
+                    continue
+                if not pattern.search(line):
+                    continue
+                try:
+                    data = json.loads(line)
+                    matches.append(Episode(**data))
+                except Exception:
+                    continue
+                if len(matches) >= max_results:
+                    return matches
+
+        return matches
+
+    def recall_formatted(
+        self,
+        query: str,
+        **kwargs: object,
+    ) -> str:
+        """Return a human-readable string of matching episodes."""
+        episodes = self.recall(query, **kwargs)  # type: ignore[arg-type]
+        if not episodes:
+            return f"No episodes found matching '{query}'."
+        lines: list[str] = []
+        for ep in episodes:
+            lines.append(f"[{ep.ts}] ({ep.role}) {ep.content[:200]}")
+        return "\n".join(lines)
+
+    def session_count(self) -> int:
+        """Count the number of session files."""
+        if not self._dir.is_dir():
+            return 0
+        return sum(1 for _ in self._dir.glob("*.jsonl"))
