@@ -1,10 +1,11 @@
 # Inside Anton 
 
-## Introduction 
+## Introduction
+In 2015, after reading *How to Create a Mind* by Ray Kurzweil, I became convinced that we could programmatically build a mind by mirroring the brain’s core building blocks.
+I tried. I failed — but I learned something important: one fundamental piece was missing. I called it the **Anticipation Block Architecture**. You can read about it [here](https://torrmal.github.io/2015/12/29/anticipation-loop/).
 
-Reading the book `How to create a mind` by Ray Kurzweil, back in 2015, a few years before we started MindsDB, I left believing, that one could programatically create Mind mirroring the brain's building blocks, however, after trying I came to the conclusion that one foundamental block needed to happen, and `Anticipation Block Architecture`, you can read more about this [here](https://torrmal.github.io/2015/12/29/anticipation-loop/).
-
-Well, turns out the world did build an architecture like that just a few years later, which is what we know as transformers, and LLMs today (2026) are at a point where the ideas that were seeded in us by 'How to create a Mind' are very viable from an implementation point of view. So 11 years later this try two ;)
+It turns out the world went on to build something remarkably similar: transformers and now, in 2026, LLMs have matured to the point where the ideas seeded by *How to Create a Mind* are no longer just philosophical — they’re implementable.
+And here we are: time to try again and thus, here's **Anton** — a brain-inspired architecture of agents.
 
 ## A mini Mind
 
