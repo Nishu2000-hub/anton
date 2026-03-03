@@ -40,8 +40,6 @@ Plot me the consumer price items contributions to inflation, stacked per month.
 What happens next is the interesting part. Anton doesn't have any particular skill to begin with. It figures it out live: fetches the page, parses the HTML, writes scratchpad code on the fly, and generates a stacked bar chart with the information you asked for — all in one conversation, with no setup.
 That's the point: you describe a problem in plain language, and Anton assembles the toolchain, writes the code, and delivers the result.
 
-<img width="400" height="701" alt="image" src="https://github.com/user-attachments/assets/6e495976-0638-44a3-9094-d6a91f92ea18" />
-
 ### Another example
 
 You don't even need to specify a specific website. For example, whatup with crypto? Try asking Anton this:
