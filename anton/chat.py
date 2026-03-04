@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from anton.llm.client import LLMClient
     from anton.memory.cortex import Cortex
     from anton.memory.episodes import EpisodicMemory
+    from anton.memory.history_store import HistoryStore
     from anton.workspace import Workspace
 
 
@@ -79,6 +80,9 @@ class ChatSession:
         console: Console | None = None,
         coding_provider: str = "anthropic",
         coding_api_key: str = "",
+        initial_history: list[dict] | None = None,
+        history_store: HistoryStore | None = None,
+        session_id: str | None = None,
     ) -> None:
         self._llm = llm_client
         self._self_awareness = self_awareness
@@ -87,9 +91,11 @@ class ChatSession:
         self._runtime_context = runtime_context
         self._workspace = workspace
         self._console = console
-        self._history: list[dict] = []
+        self._history: list[dict] = list(initial_history) if initial_history else []
         self._pending_memory_confirmations: list = []
-        self._turn_count = 0
+        self._turn_count = sum(1 for m in self._history if m.get("role") == "user") if initial_history else 0
+        self._history_store = history_store
+        self._session_id = session_id
         self._scratchpads = ScratchpadManager(
             coding_provider=coding_provider,
             coding_model=getattr(llm_client, "coding_model", ""),
@@ -136,6 +142,11 @@ class ChatSession:
                 for tid in tool_ids
             ],
         })
+
+    def _persist_history(self) -> None:
+        """Save current history to disk if a history store is configured."""
+        if self._history_store and self._session_id:
+            self._history_store.save(self._session_id, self._history)
 
     def _build_system_prompt(self) -> str:
         prompt = CHAT_SYSTEM_PROMPT.format(
@@ -226,6 +237,33 @@ class ChatSession:
         if split < 2:
             return
 
+        # Walk split backward to avoid breaking tool_use / tool_result pairs.
+        # A user message containing tool_result blocks must stay with the
+        # preceding assistant message that contains the matching tool_use.
+        while split > 1:
+            msg = self._history[split]
+            if msg.get("role") != "user":
+                break
+            content = msg.get("content")
+            if not isinstance(content, list):
+                break
+            has_tool_result = any(
+                isinstance(b, dict) and b.get("type") == "tool_result"
+                for b in content
+            )
+            if not has_tool_result:
+                break
+            # This user message has tool_results — keep it (and its paired
+            # assistant message) in the recent portion.
+            split -= 1
+            # Also pull back over the preceding assistant message so the
+            # pair stays together.
+            if split > 1 and self._history[split].get("role") == "assistant":
+                split -= 1
+
+        if split < 2:
+            return
+
         old_turns = self._history[:split]
         recent_turns = self._history[split:]
 
@@ -273,7 +311,13 @@ class ChatSession:
             "role": "user",
             "content": f"[Context summary of earlier conversation]\n{summary}",
         }
-        self._history = [summary_msg] + recent_turns
+
+        # If the recent portion starts with a user message, insert a minimal
+        # assistant separator to avoid consecutive user messages (API error).
+        if recent_turns and recent_turns[0].get("role") == "user":
+            self._history = [summary_msg, {"role": "assistant", "content": "Understood."}, *recent_turns]
+        else:
+            self._history = [summary_msg] + recent_turns
 
     def _compact_scratchpads(self) -> bool:
         """Compact all active scratchpads. Returns True if any were compacted."""
@@ -414,6 +458,7 @@ class ChatSession:
 
         # Identity extraction (Default Mode Network — every 5 turns)
         self._turn_count += 1
+        self._persist_history()
         if (
             self._turn_count % 5 == 0
             and self._cortex is not None
@@ -717,6 +762,8 @@ def _rebuild_session(
     workspace,
     console: Console,
     episodic: EpisodicMemory | None = None,
+    history_store: HistoryStore | None = None,
+    session_id: str | None = None,
 ) -> ChatSession:
     """Rebuild LLMClient + ChatSession after settings change."""
     from anton.llm.client import LLMClient
@@ -743,6 +790,8 @@ def _rebuild_session(
         console=console,
         coding_provider=settings.coding_provider,
         coding_api_key=api_key,
+        history_store=history_store,
+        session_id=session_id,
     )
 
 
@@ -772,37 +821,9 @@ def _handle_memory(
         console.print()
         return
 
-    # --- Global scope ---
-    global_hc = cortex.global_hc
-    g_identity = global_hc.recall_identity()
-    g_rules = global_hc.recall_rules()
-    g_lessons_raw = global_hc._read_full_lessons()
-    g_rule_count = sum(1 for ln in g_rules.splitlines() if ln.strip().startswith("- ")) if g_rules else 0
-    g_lesson_count = sum(1 for ln in g_lessons_raw.splitlines() if ln.strip().startswith("- ")) if g_lessons_raw else 0
-    g_topics: list[str] = []
-    if global_hc._topics_dir.is_dir():
-        g_topics = [p.stem for p in sorted(global_hc._topics_dir.iterdir()) if p.suffix == ".md"]
-
-    console.print("  [anton.cyan]Global[/] [dim](~/.anton/memory/)[/]")
-    if g_identity:
-        # Show first few profile entries
-        entries = [ln.strip()[2:] for ln in g_identity.splitlines() if ln.strip().startswith("- ")]
-        if entries:
-            console.print(f"    Identity:  {', '.join(entries[:3])}" + (" ..." if len(entries) > 3 else ""))
-        else:
-            console.print("    Identity:  [dim](set)[/]")
-    else:
-        console.print("    Identity:  [dim](empty)[/]")
-    console.print(f"    Rules:     {g_rule_count}")
-    console.print(f"    Lessons:   {g_lesson_count}")
-    if g_topics:
-        console.print(f"    Topics:    {', '.join(g_topics)}")
-    else:
-        console.print("    Topics:    [dim](none)[/]")
-    console.print()
-
     # --- Project scope ---
     project_hc = cortex.project_hc
+    p_identity = project_hc.recall_identity()
     p_rules = project_hc.recall_rules()
     p_lessons_raw = project_hc._read_full_lessons()
     p_rule_count = sum(1 for ln in p_rules.splitlines() if ln.strip().startswith("- ")) if p_rules else 0
@@ -811,7 +832,15 @@ def _handle_memory(
     if project_hc._topics_dir.is_dir():
         p_topics = [p.stem for p in sorted(project_hc._topics_dir.iterdir()) if p.suffix == ".md"]
 
-    console.print(f"  [anton.cyan]Project[/] [dim]({project_hc._dir})[/]")
+    console.print(f"  [anton.cyan]Memory[/] [dim]({project_hc._dir})[/]")
+    if p_identity:
+        entries = [ln.strip()[2:] for ln in p_identity.splitlines() if ln.strip().startswith("- ")]
+        if entries:
+            console.print(f"    Identity:  {', '.join(entries[:3])}" + (" ..." if len(entries) > 3 else ""))
+        else:
+            console.print("    Identity:  [dim](set)[/]")
+    else:
+        console.print("    Identity:  [dim](empty)[/]")
     console.print(f"    Rules:     {p_rule_count}")
     console.print(f"    Lessons:   {p_lesson_count}")
     if p_topics:
@@ -820,7 +849,7 @@ def _handle_memory(
         console.print("    Topics:    [dim](none)[/]")
     console.print()
 
-    total = g_rule_count + g_lesson_count + p_rule_count + p_lesson_count
+    total = p_rule_count + p_lesson_count
     console.print(f"  Total entries: [bold]{total}[/]")
     if cortex.needs_compaction():
         console.print("  [anton.warning]Compaction needed (>50 entries in a scope)[/]")
@@ -839,6 +868,104 @@ def _handle_memory(
     console.print()
 
 
+async def _handle_resume(
+    console: Console,
+    settings: AntonSettings,
+    state: dict,
+    self_awareness,
+    cortex,
+    workspace,
+    session: ChatSession,
+    episodic: EpisodicMemory | None = None,
+    history_store: HistoryStore | None = None,
+) -> tuple[ChatSession, str | None]:
+    """Show session picker and resume a previous chat session.
+
+    Returns (new_session, resumed_session_id) or (original_session, None).
+    """
+    from rich.prompt import Prompt
+    from rich.table import Table
+
+    if history_store is None:
+        console.print("[anton.warning]History store not available.[/]")
+        console.print()
+        return session, None
+
+    sessions = history_store.list_sessions(limit=10)
+    if not sessions:
+        console.print()
+        console.print("[anton.warning]No previous sessions to resume.[/]")
+        console.print()
+        return session, None
+
+    console.print()
+    console.print("[anton.cyan]Recent sessions:[/]")
+    console.print()
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("#", style="bold", width=3)
+    table.add_column("Date", style="anton.cyan")
+    table.add_column("Turns", justify="right")
+    table.add_column("Preview")
+
+    for i, s in enumerate(sessions, 1):
+        table.add_row(str(i), s["date"], str(s["turns"]), s["preview"])
+
+    console.print(table)
+    console.print()
+
+    choices = [str(i) for i in range(1, len(sessions) + 1)] + ["q"]
+    choice = Prompt.ask(
+        "Select session (or q to cancel)",
+        choices=choices,
+        default="q",
+        console=console,
+    )
+
+    if choice == "q":
+        console.print()
+        return session, None
+
+    idx = int(choice) - 1
+    selected = sessions[idx]
+    sid = selected["session_id"]
+
+    history = history_store.load(sid)
+    if history is None:
+        console.print("[anton.error]Failed to load session history.[/]")
+        console.print()
+        return session, None
+
+    # Resume episodic memory for this session
+    if episodic is not None and episodic.enabled:
+        episodic.resume_session(sid)
+
+    # Close old scratchpads
+    if session._scratchpads.list_pads():
+        await session._scratchpads.cancel_all_running()
+
+    # Build new session with restored history
+    new_session = _rebuild_session(
+        settings=settings,
+        state=state,
+        self_awareness=self_awareness,
+        cortex=cortex,
+        workspace=workspace,
+        console=console,
+        episodic=episodic,
+        history_store=history_store,
+        session_id=sid,
+    )
+    new_session._history = list(history)
+    new_session._turn_count = sum(1 for m in history if m.get("role") == "user")
+
+    console.print()
+    console.print(f"[anton.success]Resumed session from {selected['date']} ({selected['turns']} turns)[/]")
+    console.print()
+
+    return new_session, sid
+
+
 async def _handle_setup(
     console: Console,
     settings: AntonSettings,
@@ -848,6 +975,8 @@ async def _handle_setup(
     cortex,
     session: ChatSession,
     episodic: EpisodicMemory | None = None,
+    history_store: HistoryStore | None = None,
+    session_id: str | None = None,
 ) -> ChatSession:
     """Interactive setup wizard with sub-menu: Models, Memory, or Minds."""
     from rich.prompt import Prompt
@@ -876,6 +1005,7 @@ async def _handle_setup(
         return await _handle_setup_models(
             console, settings, workspace, state,
             self_awareness, cortex, session, episodic=episodic,
+            history_store=history_store, session_id=session_id,
         )
     elif top_choice == "3":
         return await _handle_setup_minds(
@@ -896,6 +1026,8 @@ async def _handle_setup_models(
     cortex,
     session: ChatSession,
     episodic: EpisodicMemory | None = None,
+    history_store: HistoryStore | None = None,
+    session_id: str | None = None,
 ) -> ChatSession:
     """Setup sub-menu: provider, API key, and models."""
     from rich.prompt import Prompt
@@ -1011,6 +1143,8 @@ async def _handle_setup_models(
         workspace=workspace,
         console=console,
         episodic=episodic,
+        history_store=history_store,
+        session_id=session_id,
     )
 
 
@@ -1399,6 +1533,7 @@ def _print_slash_help(console: Console) -> None:
     console.print("  [bold]/setup[/]       — Configure models or memory settings")
     console.print("  [bold]/memory[/]      — Show memory status dashboard")
     console.print("  [bold]/paste[/]       — Attach clipboard image to your message")
+    console.print("  [bold]/resume[/]      — Resume a previous chat session")
     console.print("  [bold]/help[/]        — Show this help message")
     console.print("  [bold]exit[/]         — Quit the chat")
     console.print()
@@ -1506,12 +1641,12 @@ class _ClosingSpinner:
             self._live = None
 
 
-def run_chat(console: Console, settings: AntonSettings) -> None:
+def run_chat(console: Console, settings: AntonSettings, *, resume: bool = False) -> None:
     """Launch the interactive chat REPL."""
-    asyncio.run(_chat_loop(console, settings))
+    asyncio.run(_chat_loop(console, settings, resume=resume))
 
 
-async def _chat_loop(console: Console, settings: AntonSettings) -> None:
+async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool = False) -> None:
     from anton.context.self_awareness import SelfAwarenessContext
     from anton.llm.client import LLMClient
     from anton.memory.cortex import Cortex
@@ -1559,6 +1694,12 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
     if episodic.enabled:
         episodic.start_session()
 
+    # --- History store (for /resume) ---
+    from anton.memory.history_store import HistoryStore
+
+    history_store = HistoryStore(episodes_dir)
+    current_session_id = episodic._session_id if episodic.enabled else None
+
     # Clean up old clipboard uploads
     uploads_dir = Path(settings.workspace_path) / ".anton" / "uploads"
     cleanup_old_uploads(uploads_dir)
@@ -1580,7 +1721,19 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
         console=console,
         coding_provider=settings.coding_provider,
         coding_api_key=coding_api_key,
+        history_store=history_store,
+        session_id=current_session_id,
     )
+
+    # Handle --resume flag at startup
+    if resume:
+        session, resumed_id = await _handle_resume(
+            console, settings, state, self_awareness, cortex,
+            workspace, session, episodic=episodic,
+            history_store=history_store,
+        )
+        if resumed_id:
+            current_session_id = resumed_id
 
     console.print("[anton.muted] Chat with Anton. Type '/help' for commands or 'exit' to quit.[/]")
     console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
@@ -1692,10 +1845,21 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                         console, settings, workspace, state,
                         self_awareness, cortex, session,
                         episodic=episodic,
+                        history_store=history_store,
+                        session_id=current_session_id,
                     )
                     continue
                 elif cmd == "/memory":
                     _handle_memory(console, settings, cortex, episodic=episodic)
+                    continue
+                elif cmd == "/resume":
+                    session, resumed_id = await _handle_resume(
+                        console, settings, state, self_awareness, cortex,
+                        workspace, session, episodic=episodic,
+                        history_store=history_store,
+                    )
+                    if resumed_id:
+                        current_session_id = resumed_id
                     continue
                 elif cmd == "/help":
                     _print_slash_help(console)
@@ -1788,6 +1952,8 @@ async def _chat_loop(console: Console, settings: AntonSettings) -> None:
                     workspace=workspace,
                     console=console,
                     episodic=episodic,
+                    history_store=history_store,
+                    session_id=current_session_id,
                 )
             except KeyboardInterrupt:
                 display.abort()

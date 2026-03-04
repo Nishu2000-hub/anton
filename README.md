@@ -32,76 +32,26 @@ anton
 That drops you into a conversation with Anton. Talk to Anton like a person, for example, ask Anton this:
 
 ```
-Information about inflation in the US is found on this website:
-     https://www.bls.gov/news.release/cpi.nr0.htm
-Plot me the consumer price items contributions to inflation, stacked per month.
+I hold 50 AAPL, 200 NVDA, and 10 AMZN. Get today's prices, calculate my
+total portfolio value, show me the 30-day performance of each stock, and
+any other information that might be useful. Give me a complete dashboard.
 ```
 
-What happens next is the interesting part. Anton doesn't have any particular skill to begin with. It figures it out live: fetches the page, parses the HTML, writes scratchpad code on the fly, and generates a stacked bar chart with the information you asked for — all in one conversation, with no setup.
+What happens next is the interesting part. Anton doesn't have any particular skill to begin with. It figures it out live: scrapes live prices, writes scratchpad code on the fly, crunches the numbers, and builds you a full dashboard — all in one conversation, with no setup.
 That's the point: you describe a problem in plain language, and Anton assembles the toolchain, writes the code, and delivers the result.
 
-<img width="400" height="701" alt="image" src="https://github.com/user-attachments/assets/6e495976-0638-44a3-9094-d6a91f92ea18" />
+<img width="800"  alt="image" src="https://github.com/user-attachments/assets/39ec8b3b-65e8-4e23-8861-c649969d4e1c" />
 
-### Another example
-
-You don't even need to specify a specific website. For example, whatup with crypto? Try asking Anton this:
-
-```
-Analyze how Bitcoin has evolved over the past 12 months by summarizing the
-overall price trend and highlighting major dips and gains (e.g., moves
-greater than ~5–10%). For each significant movement, find and briefly
-explain relevant news or events that may have influenced the price,
-including dates and credible sources. Use only publicly accessible
-information and scrape the web as needed, assuming no API keys are available.
-```
-
-## How it works
-
-Anton collaborates with people to solve problems, by self-evolving the skills and tools it needs, operating as follows.
-
-
-**Chat + Scratchpad** — For most tasks, Anton works directly in conversation. It thinks through the problem, writes and runs Python in a persistent scratchpad (variables, imports, and data survive across steps), installs packages as needed, and iterates until it has your answer.
-
-```
-Task → Memory Recall → Planning → Scratchpad Building (if needed) → Execution
-```
-
-### What is a Scratchpad?
-
-Anton's scratchpads are notebook-style environments it drives programmatically.
-
-When you ask Anton for something, it writes and executes Python in the scratchpad. This makes Anton particularly great at **data analysis tasks**: counting, scraping, parsing, transforming, aggregating, calling API's and exploring datasets with real computation instead of LLM guesswork.
-
-What the scratchpad handles well:
-- **Data analysis** — Load a CSV, filter rows, compute aggregates, pivot tables, plot distributions
-- **Text processing** — Parse logs, extract patterns, count tokens, transform formats
-- **Math and counting** — Character counts, statistical calculations, combinatorics
-- **Multi-step exploration** — Build up understanding incrementally, inspect intermediate results
-- **LLM-powered computation** — Call `get_llm()` inside scratchpad code for AI-assisted analysis (classification, extraction, summarization) over your data
 
 ### Explainable by default
 
 You can always ask Anton to explain what it did. Ask it to dump its scratchpad and you get a full notebook-style breakdown: every cell of code it ran, the outputs, and errors — so you can follow its reasoning step by step.
 
----
 
-## Memory System
+## How it works
 
-Anton has two complementary memory systems:
+For the full architecture of Anton, file formats, and developer guide, see **[anton/README.md](anton/README.md)**.
 
-**Semantic memory** — Rules, lessons, identity, and domain expertise stored as human-readable markdown at two scopes (global and per-project). After scratchpad sessions, it automatically extracts lessons from errors and long runs.
-
-**Episodic memory** — A complete, timestamped, searchable archive of every conversation. Stored as JSONL in `.anton/episodes/`, one file per session. Anton can search past conversations using its `recall` tool when you ask about previous sessions or past work.
-
-Configure memory via `/setup` > Memory, or set environment variables:
-- `ANTON_MEMORY_MODE` — Semantic memory encoding mode (autopilot / copilot / off). Default: **autopilot**.
-- `ANTON_EPISODIC_MEMORY` — Episodic memory archive (true / false). Default: **true**.
-
-Use `/memory` to view a read-only dashboard of both memory systems.
-
-For the full architecture, file formats, and developer guide, see **[anton/README.md](anton/README.md)**.
-
----
 
 ## Workspace
 
@@ -126,6 +76,21 @@ ANTON_EPISODIC_MEMORY    # Episodic memory archive (default: true)
 ```
 
 Env loading order: `cwd/.env` → `.anton/.env` → `~/.anton/.env`
+
+### Memory System that you can explore
+
+Anton has two complementary memory systems that are meant to be human readable:
+
+**Semantic memory** — Rules, lessons, identity, and domain expertise stored as human-readable markdown at two scopes (global and per-project). After scratchpad sessions, it automatically extracts lessons from errors and long runs.
+
+**Episodic memory** — A complete, timestamped, searchable archive of every conversation. Stored as JSONL in `.anton/episodes/`, one file per session. Anton can search past conversations using its `recall` tool when you ask about previous sessions or past work.
+
+Configure memory via `/setup` > Memory, or set environment variables:
+- `ANTON_MEMORY_MODE` — Semantic memory encoding mode (autopilot / copilot / off). Default: **autopilot**.
+- `ANTON_EPISODIC_MEMORY` — Episodic memory archive (true / false). Default: **true**.
+
+Use `/memory` to view a read-only dashboard of both memory systems.
+
 
 ## Manual install
 
