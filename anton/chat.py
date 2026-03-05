@@ -996,13 +996,14 @@ async def _handle_setup(
     console.print()
     console.print("  What do you want to configure?")
     console.print("    [bold]1[/]  Datasource — connect to datasource via Minds")
-    console.print("    [bold]2[/]  Memory — memory mode and episodic memory")
+    console.print("    [bold]2[/]  LLM — provider, API key, and models")
+    console.print("    [bold]3[/]  Memory — memory mode and episodic memory")
     console.print("    [bold]q[/]  Back")
     console.print()
 
     top_choice = Prompt.ask(
         "Select",
-        choices=["1", "2", "q"],
+        choices=["1", "2", "3", "q"],
         default="q",
         console=console,
     )
@@ -1014,6 +1015,12 @@ async def _handle_setup(
         return await _handle_setup_minds(
             console, settings, workspace, state,
             self_awareness, cortex, session, episodic=episodic,
+        )
+    elif top_choice == "2":
+        return await _handle_setup_models(
+            console, settings, workspace, state,
+            self_awareness, cortex, session, episodic=episodic,
+            history_store=history_store, session_id=session_id,
         )
     else:
         _handle_setup_memory(console, settings, workspace, cortex, episodic=episodic)
