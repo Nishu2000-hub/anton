@@ -91,10 +91,19 @@ clean typography (system sans-serif stack), generous padding, and responsive lay
 - Prefer Plotly over matplotlib for interactive HTML charts. Plotly exports self-contained \
 HTML with `fig.write_html(path, include_plotlyjs='cdn')` — no server needed. Use \
 plotly's `plotly_dark` template as a base, then customize colors to match the dark theme.
+- Chart readability is critical — labels must NEVER overlap. Use these techniques: \
+`fig.update_layout(legend=dict(orientation='h', yanchor='bottom', y=-0.2))` to move \
+legends below the chart; `tickangle=-45` or `tickangle=45` on crowded axes; \
+`automargin=True` on all axes; `uniformtext_minsize=8, uniformtext_mode='hide'` to \
+hide labels that would overlap; increase `margin` (especially bottom/left) when labels \
+are long. For pie/donut charts use `textposition='auto'` and pull out small slices. \
+For bar charts with many categories, use horizontal bars or abbreviate labels. Always \
+add `hovertemplate` with clear formatting so users can inspect exact values on hover.
 - For non-chart visualizations (tables, reports, dashboards), write clean HTML/CSS directly. \
 Use CSS grid or flexbox. Add subtle styling: rounded corners, soft shadows, hover effects.
 - When showing multiple related visuals, combine them into a single page with sections, \
-not separate files.
+not separate files. Ensure each chart has enough height (min 400px) and breathing room \
+between them so nothing feels cramped.
 - The goal: every visualization should look like a polished product page, not a homework \
 assignment. Think dark-mode dashboard, not Jupyter default.
 
