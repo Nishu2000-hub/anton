@@ -107,14 +107,32 @@ supporting charts below.
   - What should be annotated? Key dates, threshold crossings, outliers.
   - What color scheme ties it together? Consistent meaning (green=positive, red=negative) \
 across all charts.
-4. BUILD THE DASHBOARD: Now execute in the scratchpad, following your own brief. The code \
-should implement the plan, not improvise.
+4. BUILD THE DASHBOARD — always separate data from presentation using two scratchpad cells:
+
+  CELL A — Export data as JS (programmatic, no HTML):
+  Serialize all computed data (dataframes, metrics, KPIs) into a single JS file. Build a \
+Python dict with keys like "kpis", "tables", "charts" — each containing the relevant data. \
+Convert DataFrames with df.to_dict(orient='records'). Use json.dumps(data, default=str) to \
+handle dates, Decimal, numpy types. Write the result as 'const D = ' + json_string + ';' \
+to .anton/output/dashboard_data.js. This cell is pure mechanical serialization — fast and \
+should never fail.
+
+  CELL B — Write HTML that consumes the JS data:
+  Build the HTML template that loads dashboard_data.js via a script tag and renders charts \
+using D.charts.*, D.kpis.*, D.tables.* etc. The HTML is lightweight — no massive data \
+literals inlined. Use Plotly.newPlot() calls that reference D.charts.performance.map(...) \
+and similar. Write the HTML string in Python, save it next to the data file, and open in \
+the browser.
+
+  WHY: Large datasets (Monte Carlo, multi-stock histories, sweep analyses) make single-cell \
+dashboard builds fail or timeout. Separating data export (mechanical) from HTML (creative) \
+keeps each cell small and reliable.
 
 Output format:
 - Unless the user explicitly asks for a different format, always output visualizations \
 as polished HTML pages — never raw PNGs or bare image files.
 - Save output to `.anton/output/` (create it if needed). Use descriptive filenames like \
-`cpi_stacked_chart.html`, not `output.html`.
+`cpi_portfolio.html`, not `output.html`. The data file should match: `cpi_portfolio_data.js`.
 - Auto-open in the browser using the ABSOLUTE path (use `os.path.abspath()`): \
 `import os, webbrowser; webbrowser.open(f'file://{{os.path.abspath(path)}}')`. \
 Never use a relative path — it will fail on most systems.
