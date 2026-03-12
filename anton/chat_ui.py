@@ -151,15 +151,17 @@ class StreamDisplay:
         self._live: Live | None = None
         self._toolbar = toolbar
         self._activities: list[_ToolActivity] = []
-        self._thinking_msg: str = ""
-        self._footer_msg: str = ""
-        self._cancel_msg: str = ""
         self._buffer = ""  # answer text accumulated during streaming
         self._in_tool_phase = False
         self._last_was_tool = False
         self._initial_text = ""
         self._initial_printed = False
         self._active = False
+        # 3-line footer state
+        self._line1_fun: str = ""       # Line 1: Esc to cancel — fun message
+        self._line2_status: str = ""    # Line 2: ⠸ what's happening now
+        self._line3_peek: str = ""      # Line 3: ↳ live peek at output
+        self._cancel_msg: str = ""
 
     def _set_status(self, text: str) -> None:
         if self._toolbar is not None:
@@ -189,25 +191,43 @@ class StreamDisplay:
         if self._live is not None:
             self._live.update(self._build_spinner_display())
 
-    def _build_spinner_display(self) -> Spinner:
-        """Build the spinner with optional footer text."""
+    def _build_spinner_display(self) -> object:
+        """Build the 3-line footer display.
+
+        Line 1: ⏵⏵ Esc to cancel — fun message
+        Line 2: ⠸ status / what's happening now
+        Line 3:   ↳ live peek at streaming output
+        """
+        from rich.console import Group
+
+        # Line 1: control + personality
+        line1 = Text()
         if self._cancel_msg:
-            footer = f"  \u23f5\u23f5 {self._cancel_msg}"
+            line1.append(f"\u23f5\u23f5 {self._cancel_msg}", style="#ff69b4")
         else:
-            footer = f"  \u23f5\u23f5 Esc to stop \u2014 {self._footer_msg}"
-        spinner = Spinner(
-            "dots",
-            text=Text(f" {self._thinking_msg}  ", style="anton.muted")
-            + Text(footer, style="#ff69b4"),
-        )
-        return spinner
+            line1.append(f"\u23f5\u23f5 Esc to cancel \u2014 {self._line1_fun}", style="#ff69b4")
+
+        # Line 2: spinner + status (we return a Spinner so it animates)
+        # Rich Spinner doesn't compose well in Text, so we build a Group
+        spinner = Spinner("dots", text=Text(f" {self._line2_status}", style="anton.muted"))
+
+        # Line 3: peek (only if there's something to peek at)
+        parts: list = [line1, spinner]
+        if self._line3_peek:
+            line3 = Text()
+            line3.append("  \u21b3 ", style="anton.muted")
+            line3.append(self._line3_peek, style="dim")
+            parts.append(line3)
+
+        return Group(*parts)
 
     # --- Public API ---
 
     def start(self) -> None:
-        self._thinking_msg = random.choice(THINKING_MESSAGES)  # noqa: S311
-        self._footer_msg = random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
-        self._set_status(self._thinking_msg)
+        self._line1_fun = random.choice(THINKING_MESSAGES)  # noqa: S311
+        self._line2_status = random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+        self._line3_peek = ""
+        self._set_status(self._line1_fun)
         self._activities = []
         self._buffer = ""
         self._initial_text = ""
@@ -224,13 +244,11 @@ class StreamDisplay:
         if self._in_tool_phase:
             self._buffer += delta
             self._last_was_tool = False
-            # Show orchestrator thoughts in the spinner as they stream
-            self._footer_msg = self._truncate_thought(self._buffer)
+            self._line3_peek = self._extract_peek(self._buffer)
             self._update_spinner()
         else:
             self._initial_text += delta
-            # Show initial thoughts in the spinner too
-            self._footer_msg = self._truncate_thought(self._initial_text)
+            self._line3_peek = self._extract_peek(self._initial_text)
             self._update_spinner()
 
     def show_tool_result(self, content: str) -> None:
@@ -284,13 +302,14 @@ class StreamDisplay:
             return
 
         if phase == "analyzing":
-            self._thinking_msg = random.choice(ANALYZING_MESSAGES)  # noqa: S311
-            self._footer_msg = random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+            self._line1_fun = random.choice(ANALYZING_MESSAGES)  # noqa: S311
+            self._line2_status = "Composing response..."
+            self._line3_peek = ""
             self._update_spinner()
             return
 
         if phase == "scratchpad_start":
-            # Print the scratchpad activity line NOW (before execution) with ETA
+            # Print the scratchpad activity line NOW (before execution)
             for act in reversed(self._activities):
                 if act.name == "scratchpad" and not act.printed:
                     if eta:
@@ -298,9 +317,8 @@ class StreamDisplay:
                     self._stop_spinner()
                     self._print_activity_line(act)
                     act.printed = True
-                    eta_str = f" ~{int(eta)}s" if eta else ""
-                    self._thinking_msg = f"Running{eta_str}..."
-                    self._footer_msg = act.description
+                    self._line2_status = act.description
+                    self._line3_peek = ""
                     self._start_spinner()
                     break
             return
@@ -309,12 +327,13 @@ class StreamDisplay:
             # Mark the scratchpad line as complete with actual elapsed time
             for act in reversed(self._activities):
                 if act.name == "scratchpad" and act.printed and not act.done:
-                    elapsed = eta if eta else 0  # eta_seconds carries elapsed time here
+                    elapsed = eta if eta else 0  # eta_seconds carries elapsed time
                     act.done = True
                     self._stop_spinner()
                     self._print_done_line(act, elapsed)
-                    self._thinking_msg = random.choice(THINKING_MESSAGES)  # noqa: S311
-                    self._footer_msg = random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+                    self._line1_fun = random.choice(THINKING_MESSAGES)  # noqa: S311
+                    self._line2_status = random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+                    self._line3_peek = ""
                     self._start_spinner()
                     break
             return
@@ -324,14 +343,14 @@ class StreamDisplay:
                 if act.name == "scratchpad":
                     act.current_progress = message
                     break
-            self._thinking_msg = message
+            self._line3_peek = message
             self._update_spinner()
             return
 
         label = PHASE_LABELS.get(phase, phase)
         eta_str = f"  ~{int(eta)}s" if eta else ""
-        self._thinking_msg = f"{label}  {message}{eta_str}"
-        self._set_status(self._thinking_msg)
+        self._line2_status = f"{label}  {message}{eta_str}"
+        self._set_status(self._line2_status)
         self._update_spinner()
 
     def finish(self) -> None:
@@ -370,27 +389,28 @@ class StreamDisplay:
         self._start_spinner()
 
     def show_cancelling(self) -> None:
-        """Update the footer to acknowledge that cancellation is in progress."""
+        """Update line 1 to acknowledge that cancellation is in progress."""
         self._cancel_msg = random.choice(CANCEL_MESSAGES)  # noqa: S311
+        self._line2_status = "Stopping..."
+        self._line3_peek = ""
         self._update_spinner()
 
     # --- Private helpers ---
 
-    def _truncate_thought(self, text: str) -> str:
-        """Extract the last meaningful line from streaming text for the footer."""
-        # Get the last non-empty line
+    def _extract_peek(self, text: str) -> str:
+        """Extract the last meaningful line from streaming text for the peek line."""
         lines = text.rstrip().splitlines()
         if not lines:
-            return random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+            return ""
         last = lines[-1].strip()
         if not last:
-            return random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+            return ""
         # Strip markdown formatting
         for ch in ("#", "*", "-", ">", "`"):
             last = last.lstrip(ch).strip()
         if len(last) > _MAX_THOUGHT_LEN:
             last = last[:_MAX_THOUGHT_LEN - 1] + "\u2026"
-        return last or random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+        return last
 
     def _print_activity_line(self, act: _ToolActivity) -> None:
         """Print a single activity line permanently (before execution)."""
