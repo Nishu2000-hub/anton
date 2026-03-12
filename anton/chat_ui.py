@@ -137,9 +137,10 @@ PHASE_LABELS = {
 class StreamDisplay:
     """Manages a Rich Live display for streaming LLM responses.
 
-    Uses segmented Live sessions: Live is active only while content is
-    actively streaming. Between phases (e.g. after a tool result, before
-    analysis), content is printed permanently so the user can scroll.
+    Live runs continuously during streaming. The only time Live is
+    stopped mid-turn is to print tool results (scratchpad dumps)
+    permanently so the user can scroll them. After printing, Live
+    restarts seamlessly.
     """
 
     def __init__(self, console: Console, toolbar: dict | None = None) -> None:
@@ -157,6 +158,7 @@ class StreamDisplay:
         self._footer_msg: str = ""
         self._cancel_msg: str = ""
         self._active = False  # True between start() and finish()/abort()
+        self._printed_results: list[str] = []  # tool results already printed permanently
 
     def _set_status(self, text: str) -> None:
         if self._toolbar is not None:
@@ -179,35 +181,10 @@ class StreamDisplay:
         self._live.start()
 
     def _stop_live(self) -> None:
-        """Stop the current Live segment (content vanishes — caller prints permanently)."""
+        """Stop the current Live segment (transient content vanishes)."""
         if self._live is not None:
             self._live.stop()
             self._live = None
-
-    def _flush_text(self) -> None:
-        """Stop Live and print accumulated *text* permanently (not the activity tree).
-
-        The activity tree is printed once in finish(). Intermediate flushes
-        only emit text so tool results become scrollable between phases.
-        """
-        self._stop_live()
-
-        # Print initial text (muted "inner speech")
-        if self._initial_text:
-            if self._activities:
-                self._console.print(Text(self._initial_text.rstrip(), style="anton.muted"))
-            else:
-                self._console.print(Text("anton> ", style="anton.cyan"), end="")
-                self._console.print(Markdown(self._initial_text))
-            self._initial_text = ""
-
-        # Print buffered answer text
-        if self._buffer:
-            if not self._answer_header_printed:
-                self._console.print(Text("anton> ", style="anton.cyan"), end="")
-                self._answer_header_printed = True
-            self._console.print(Markdown(self._buffer))
-            self._buffer = ""
 
     # --- Public API ---
 
@@ -219,19 +196,19 @@ class StreamDisplay:
         self._buffer = ""
         self._started = False
         self._activities = []
-        self._answer_header_printed = False
         self._in_tool_phase = False
         self._answer_started = False
         self._last_was_tool = False
         self._cancel_msg = ""
         self._footer_msg = random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
         self._active = True
+        self._printed_results = []
         self._start_live()
 
     def append_text(self, delta: str) -> None:
         if not self._active:
             return
-        # Restart Live if it was stopped between phases
+        # Restart Live if it was stopped for a tool result
         if self._live is None:
             self._start_live()
         if self._in_tool_phase:
@@ -246,15 +223,18 @@ class StreamDisplay:
         self._refresh_live()
 
     def show_tool_result(self, content: str) -> None:
-        """Flush current text permanently, then print tool result permanently."""
+        """Stop Live, print tool result permanently (scrollable), restart Live."""
         if not self._active:
             return
-        # Flush any accumulated text so far
-        self._flush_text()
-        # Print the tool result directly — scrollable immediately
+        # Stop Live so we can print permanently
+        self._stop_live()
+        # Print the tool result — immediately scrollable
         self._console.print(Markdown(content))
+        self._printed_results.append(content)
         self._last_was_tool = True
         self._started = True
+        # Restart Live for whatever comes next
+        self._start_live()
 
     def show_tool_execution(self, task: str) -> None:
         """Backward-compatible wrapper — delegates to on_tool_use_start."""
@@ -264,7 +244,6 @@ class StreamDisplay:
         """Track a new tool use and update the live display."""
         if not self._active:
             return
-        # Restart Live if stopped between phases
         if self._live is None:
             self._start_live()
         self._in_tool_phase = True
@@ -290,15 +269,14 @@ class StreamDisplay:
                 return
 
     def update_progress(self, phase: str, message: str, eta: float | None = None) -> None:
-        """Update the Live display with agent progress (phase + message + optional ETA)."""
+        """Update the Live display with agent progress."""
         if not self._active:
             return
 
-        # Tools finished, LLM is now analyzing — flush text, restart with analyzing spinner
+        # Tools finished, LLM is now analyzing — just swap spinner text
         if phase == "analyzing":
-            self._flush_text()
             self._thinking_msg = random.choice(ANALYZING_MESSAGES)  # noqa: S311
-            self._start_live(self._thinking_msg)
+            self._refresh_live()
             return
 
         # Scratchpad is about to start — set description + ETA immediately
@@ -328,6 +306,7 @@ class StreamDisplay:
         self._refresh_live()
 
     def finish(self) -> None:
+        """Stop Live and print final permanent output."""
         self._stop_live()
 
         # Finalize any activities that never got on_tool_use_end
@@ -336,27 +315,23 @@ class StreamDisplay:
                 raw = "".join(act.json_parts)
                 act.description = _tool_display_text(act.name, raw)
 
-        # Print initial text
-        if self._initial_text:
-            if self._activities:
-                self._console.print(Text(self._initial_text.rstrip(), style="anton.muted"))
-            else:
-                self._console.print(Text("anton> ", style="anton.cyan"), end="")
-                self._console.print(Markdown(self._initial_text))
-            self._initial_text = ""
-
-        # Print activity tree once
         if self._activities:
+            # Print initial text as muted "inner speech"
+            if self._initial_text:
+                self._console.print(Text(self._initial_text.rstrip(), style="anton.muted"))
+            # Print finalized activity tree
             self._console.print(self._build_activity_tree(final=True))
-
-        # Print any remaining buffered answer text
-        if self._buffer:
-            if not self._answer_header_printed:
+            # Print answer
+            if self._buffer:
                 self._console.print(Text("anton> ", style="anton.cyan"), end="")
-            self._console.print(Markdown(self._buffer))
-            self._buffer = ""
+                self._console.print(Markdown(self._buffer))
+        else:
+            # No tools — print response normally
+            all_text = self._initial_text + self._buffer
+            if all_text:
+                self._console.print(Text("anton> ", style="anton.cyan"), end="")
+                self._console.print(Markdown(all_text))
 
-        # If no activities and no text was printed at all, nothing to show
         self._active = False
         self._console.print()
 
