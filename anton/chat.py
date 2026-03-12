@@ -579,6 +579,8 @@ class ChatSession:
                                 message=description or "Running code",
                                 eta_seconds=estimated_seconds,
                             )
+                            import time as _time
+                            _sp_t0 = _time.monotonic()
                             from anton.scratchpad import Cell
                             cell = None
                             async for item in pad.execute_streaming(
@@ -594,6 +596,12 @@ class ChatSession:
                                     )
                                 elif isinstance(item, Cell):
                                     cell = item
+                            _sp_elapsed = _time.monotonic() - _sp_t0
+                            yield StreamTaskProgress(
+                                phase="scratchpad_done",
+                                message=description or "Done",
+                                eta_seconds=_sp_elapsed,
+                            )
                             result_text = format_cell_result(cell) if cell else "No result produced."
 
                             # Log scratchpad cell to episodic memory

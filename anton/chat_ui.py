@@ -23,6 +23,8 @@ class _ToolActivity:
     current_progress: str = ""
     step_count: int = 0
     eta_str: str = ""
+    printed: bool = False  # whether the activity line has been printed
+    done: bool = False  # whether execution is complete
 
 
 _TOOL_LABELS: dict[str, str] = {
@@ -34,6 +36,9 @@ _TOOL_LABELS: dict[str, str] = {
 _MAX_DESC = 60
 
 _REFRESH_FPS = 6
+
+# Max chars of orchestrator text to show in the spinner
+_MAX_THOUGHT_LEN = 80
 
 
 def _tool_display_text(name: str, input_json: str) -> str:
@@ -219,8 +224,14 @@ class StreamDisplay:
         if self._in_tool_phase:
             self._buffer += delta
             self._last_was_tool = False
+            # Show orchestrator thoughts in the spinner as they stream
+            self._footer_msg = self._truncate_thought(self._buffer)
+            self._update_spinner()
         else:
             self._initial_text += delta
+            # Show initial thoughts in the spinner too
+            self._footer_msg = self._truncate_thought(self._initial_text)
+            self._update_spinner()
 
     def show_tool_result(self, content: str) -> None:
         """Print a tool result permanently (immediately scrollable)."""
@@ -236,14 +247,13 @@ class StreamDisplay:
         self.on_tool_use_start(f"_compat_{id(task)}", task)
 
     def on_tool_use_start(self, tool_id: str, name: str) -> None:
-        """Track a new tool use and print the activity line."""
+        """Track a new tool use."""
         if not self._active:
             return
         self._in_tool_phase = True
         self._last_was_tool = True
         activity = _ToolActivity(tool_id=tool_id, name=name)
         self._activities.append(activity)
-        # Activity line will be printed when we know the description (on_tool_use_end)
 
     def on_tool_use_delta(self, tool_id: str, json_delta: str) -> None:
         """Accumulate JSON input deltas for a tool use."""
@@ -264,29 +274,47 @@ class StreamDisplay:
                 if act.name != "scratchpad":
                     self._stop_spinner()
                     self._print_activity_line(act)
+                    act.printed = True
                     self._start_spinner()
                 return
 
     def update_progress(self, phase: str, message: str, eta: float | None = None) -> None:
-        """Update progress — just changes the spinner text."""
+        """Update progress — manages spinner and activity lines."""
         if not self._active:
             return
 
         if phase == "analyzing":
             self._thinking_msg = random.choice(ANALYZING_MESSAGES)  # noqa: S311
+            self._footer_msg = random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
             self._update_spinner()
             return
 
         if phase == "scratchpad_start":
             # Print the scratchpad activity line NOW (before execution) with ETA
             for act in reversed(self._activities):
-                if act.name == "scratchpad" and not act.eta_str:
+                if act.name == "scratchpad" and not act.printed:
                     if eta:
                         act.eta_str = f"~{int(eta)}s"
                     self._stop_spinner()
                     self._print_activity_line(act)
+                    act.printed = True
                     eta_str = f" ~{int(eta)}s" if eta else ""
                     self._thinking_msg = f"Running{eta_str}..."
+                    self._footer_msg = act.description
+                    self._start_spinner()
+                    break
+            return
+
+        if phase == "scratchpad_done":
+            # Mark the scratchpad line as complete with actual elapsed time
+            for act in reversed(self._activities):
+                if act.name == "scratchpad" and act.printed and not act.done:
+                    elapsed = eta if eta else 0  # eta_seconds carries elapsed time here
+                    act.done = True
+                    self._stop_spinner()
+                    self._print_done_line(act, elapsed)
+                    self._thinking_msg = random.choice(THINKING_MESSAGES)  # noqa: S311
+                    self._footer_msg = random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
                     self._start_spinner()
                     break
             return
@@ -314,7 +342,6 @@ class StreamDisplay:
         if self._initial_text and not self._initial_printed:
             if self._activities:
                 self._console.print(Text(self._initial_text.rstrip(), style="anton.muted"))
-            # If no activities, initial text IS the answer — handled below
 
         # Print answer
         if self._activities:
@@ -349,8 +376,24 @@ class StreamDisplay:
 
     # --- Private helpers ---
 
+    def _truncate_thought(self, text: str) -> str:
+        """Extract the last meaningful line from streaming text for the footer."""
+        # Get the last non-empty line
+        lines = text.rstrip().splitlines()
+        if not lines:
+            return random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+        last = lines[-1].strip()
+        if not last:
+            return random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+        # Strip markdown formatting
+        for ch in ("#", "*", "-", ">", "`"):
+            last = last.lstrip(ch).strip()
+        if len(last) > _MAX_THOUGHT_LEN:
+            last = last[:_MAX_THOUGHT_LEN - 1] + "\u2026"
+        return last or random.choice(WORKING_FOOTER_MESSAGES)  # noqa: S311
+
     def _print_activity_line(self, act: _ToolActivity) -> None:
-        """Print a single activity line permanently."""
+        """Print a single activity line permanently (before execution)."""
         line = Text()
         label = act.description or _TOOL_LABELS.get(act.name, act.name)
         prefix = "\u23bf " if act is self._activities[0] else "  "
@@ -358,4 +401,12 @@ class StreamDisplay:
         line.append(label, style="bold")
         if act.eta_str:
             line.append(f" {act.eta_str}", style="anton.muted")
+        self._console.print(line)
+
+    def _print_done_line(self, act: _ToolActivity, elapsed: float) -> None:
+        """Print a completion marker for a finished activity."""
+        line = Text()
+        line.append("  \u2714 ", style="green")
+        elapsed_str = f"{elapsed:.1f}s" if elapsed >= 1 else f"{int(elapsed * 1000)}ms"
+        line.append(elapsed_str, style="anton.muted")
         self._console.print(line)
