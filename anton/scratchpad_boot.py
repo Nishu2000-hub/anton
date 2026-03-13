@@ -497,13 +497,6 @@ def _truncate_sample(text, max_chars):
 
 namespace["sample"] = sample
 
-# --- Dashboard helper (imported from separate module for cleanliness) ---
-try:
-    from anton.dashboard_template import save_dashboard
-    namespace["save_dashboard"] = save_dashboard
-except ImportError:
-    pass  # anton package not on path — dashboard helper not available
-
 # --- Logging capture ---
 # Libraries like httpx, urllib3, etc. use Python logging. By default these
 # messages are silently dropped (no handler configured). We set up a handler

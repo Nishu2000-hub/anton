@@ -579,7 +579,7 @@ class ChatSession:
                         if isinstance(prep, str):
                             result_text = prep
                         else:
-                            pad, code, description, estimated_time, estimated_seconds, expected_output = prep
+                            pad, code, description, estimated_time, estimated_seconds = prep
                             # Signal intent + ETA before execution begins
                             yield StreamTaskProgress(
                                 phase="scratchpad_start",
@@ -596,7 +596,6 @@ class ChatSession:
                                 estimated_time=estimated_time,
                                 estimated_seconds=estimated_seconds,
                                 cancel_event=self._cancel_event,
-                                expected_output=expected_output,
                             ):
                                 if isinstance(item, str):
                                     yield StreamTaskProgress(
@@ -610,7 +609,7 @@ class ChatSession:
                                 message=description or "Done",
                                 eta_seconds=_sp_elapsed,
                             )
-                            result_text = format_cell_result(cell, expected_output=expected_output) if cell else "No result produced."
+                            result_text = format_cell_result(cell) if cell else "No result produced."
 
                             # Log scratchpad cell to episodic memory
                             if self._episodic is not None and cell is not None:

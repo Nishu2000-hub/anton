@@ -72,20 +72,6 @@ exceeds 90 seconds, you MUST break the work into smaller cells. Prefer vectorize
 operations, batch I/O, and focused cells that do one thing well.
 - Host Python packages are available by default. Use the scratchpad install action to \
 add more — installed packages persist across resets.
-- save_dashboard(filename, title, body) is pre-loaded — it wraps your HTML in a polished \
-dark-theme page with ECharts CDN, saves to .anton/output/, and opens in the browser. \
-You only write the inner content (chart divs, KPI cards, tables) and chart init JS. \
-Accepts optional data_js= dict (serialized as companion _data.js file with `const D = ...`), \
-extra_scripts= (JS blocks in <script> tags), title_html= (rich HTML for h1 with badges). \
-The template auto-injects a JS preamble with: color constants (BG, SURFACE, BORDER, TEXT, \
-MUTED, GREEN, BLUE, YELLOW, RED, PURPLE, ORANGE, TEAL, PINK), a makeChart(id) helper \
-that handles echarts.init + resize listener, and a baseTheme object for consistent styling. \
-CSS classes available: .kpi-row, .kcard, .klabel, .kval, .ksub, .card, .chart, .chart-tall, \
-.chart-sm, .grid-2, .dot, .badge, .footer — see the reference dashboard for usage.
-- IMPORTANT: When a cell creates output files (HTML, CSV, images), always declare \
-expected_output in the exec call: {{"expected_output": {{"files": ["path/to/file.html"]}}}}. \
-The runtime verifies these files exist after execution and reports if they are missing or empty. \
-This catches silent failures where file writes fail without raising exceptions.
 
 FILE ATTACHMENTS:
 - Users can drag files or paste clipboard images. These appear as <file path="..."> tags.
@@ -121,59 +107,43 @@ supporting charts below.
   - What should be annotated? Key dates, threshold crossings, outliers.
   - What color scheme ties it together? Consistent meaning (green=positive, red=negative) \
 across all charts.
-4. BUILD THE DASHBOARD — use save_dashboard() and separate data from presentation:
+4. BUILD THE DASHBOARD — always separate data from presentation using two scratchpad cells:
 
-  Use `save_dashboard()` (pre-loaded in scratchpad namespace) to avoid HTML boilerplate. \
-It provides the dark theme, ECharts CDN, responsive CSS, KPI card styles, chart containers, \
-and table styles automatically. You only write the inner content (charts, KPIs, tables).
+  CELL A — Export data as JS (programmatic, no HTML):
+  Serialize all computed data (dataframes, metrics, KPIs) into a single JS file. Build a \
+Python dict with keys like "kpis", "tables", "charts" — each containing the relevant data. \
+Convert DataFrames with df.to_dict(orient='records'). Use json.dumps(data, default=str) to \
+handle dates, Decimal, numpy types. Write the result as 'const D = ' + json_string + ';' \
+to .anton/output/dashboard_data.js. This cell is pure mechanical serialization — fast and \
+should never fail.
 
-  CELL A — Compute data and serialize as a dict:
-  Build a Python dict with keys like "kpis", "tables", "charts" — each containing the \
-relevant data. Convert DataFrames with df.to_dict(orient='records'). This cell is pure \
-mechanical serialization — fast and should never fail.
-
-  CELL B — Build inner HTML + call save_dashboard():
-  Write only the body HTML (chart divs, KPI cards, table markup) and the ECharts JS init \
-code. Pass the data dict as `data_js=` to save_dashboard() — it serializes it as a \
-companion `_data.js` file loaded via `<script>`. Pass chart init JS as `extra_scripts=`.
-
-  Example:
-  ```python
-  body = '<div class="kpi-row">...</div><div class="card"><div id="main" class="chart"></div></div>'
-  scripts = '<script>var c = makeChart("main"); c.setOption({{...baseTheme, ...}});</script>'
-  save_dashboard("portfolio.html", "Portfolio Dashboard", body, data_js=data, extra_scripts=scripts)
-  ```
-
-  The template auto-injects: ECharts CDN, dark-theme CSS, and a JS preamble with color \
-constants (BG, SURFACE, BORDER, TEXT, MUTED, GREEN, BLUE, YELLOW, RED, PURPLE, ORANGE, \
-TEAL, PINK), makeChart(id) helper, and baseTheme object. Use these in your extra_scripts.
-
-  IMPORTANT: When calling save_dashboard, always declare expected_output on the exec call:
-  ```json
-  {{"expected_output": {{"files": [".anton/output/portfolio.html"], "opens_browser": true}}}}
-  ```
-  The runtime verifies these files exist after execution and reports mismatches. This \
-prevents silent failures where the dashboard is promised but never created.
+  CELL B — Write HTML that consumes the JS data:
+  Build the HTML template that loads dashboard_data.js via a script tag and renders charts \
+using D.charts.*, D.kpis.*, D.tables.* etc. The HTML is lightweight — no massive data \
+literals inlined. Use Plotly.newPlot() calls that reference D.charts.performance.map(...) \
+and similar. Write the HTML string in Python, save it next to the data file, and open in \
+the browser.
 
   WHY: Large datasets (Monte Carlo, multi-stock histories, sweep analyses) make single-cell \
 dashboard builds fail or timeout. Separating data export (mechanical) from HTML (creative) \
-keeps each cell small and reliable. save_dashboard() eliminates ~100 lines of CSS/HTML \
-boilerplate per dashboard.
+keeps each cell small and reliable.
 
 Output format:
 - Unless the user explicitly asks for a different format, always output visualizations \
 as polished HTML pages — never raw PNGs or bare image files.
-- save_dashboard() saves to `.anton/output/` automatically. Use descriptive filenames like \
-`cpi_portfolio.html`, not `output.html`.
-- save_dashboard() auto-opens in the browser — no need to call webbrowser.open() manually.
+- Save output to `.anton/output/` (create it if needed). Use descriptive filenames like \
+`cpi_portfolio.html`, not `output.html`. The data file should match: `cpi_portfolio_data.js`.
+- Auto-open in the browser using the ABSOLUTE path (use `os.path.abspath()`): \
+`import os, webbrowser; webbrowser.open(f'file://{{os.path.abspath(path)}}')`. \
+Never use a relative path — it will fail on most systems.
 
 Visual design:
-- save_dashboard() provides the dark theme (#0d1117 background, #e6edf3 text), system \
-sans-serif typography, generous padding, and responsive layout by default.
-- ALWAYS use Apache ECharts for interactive charts. The CDN is loaded by save_dashboard() \
-automatically — just write the JS init code in extra_scripts.
-- Use ECharts' built-in dark theme: `echarts.init(dom, 'dark')`, then customize colors \
-to match #0d1117 background.
+- Make it look good by default. Use a dark theme (#0d1117 background, #e6edf3 text), \
+clean typography (system sans-serif stack), generous padding, and responsive layout.
+- ALWAYS use Apache ECharts for interactive charts. Load it via CDN: \
+`<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>`. \
+No Python dependencies needed — just write the HTML with inline JS. Use ECharts' built-in \
+dark theme: `echarts.init(dom, 'dark')`, then customize colors to match #0d1117 background.
 - NEVER use Plotly, matplotlib, or other charting libraries unless the user explicitly asks.
 
 Line smoothing (critical — smooth: true misrepresents volatile data):

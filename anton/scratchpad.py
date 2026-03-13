@@ -21,34 +21,18 @@ _PROGRESS_MARKER = "__ANTON_PROGRESS__"
 _KEEP_RECENT = 5  # Number of recent cells to keep during compaction
 
 
-def _compute_timeouts(
-    estimated_seconds: int,
-    expected_output: dict | None = None,
-) -> tuple[float, float]:
+def _compute_timeouts(estimated_seconds: int) -> tuple[float, float]:
     """Compute (total_timeout, inactivity_timeout) from estimated execution time.
 
     - If estimate is 0: use defaults (120s total, 30s inactivity).
     - Otherwise: total = max(estimate * 2, estimate + 30) with no cap.
       Inactivity = max(estimate * 0.5, 30) — no hard cap, scales with estimate.
-    - If expected_output declares HTML files, boost inactivity to at least 90s
-      (HTML generation often involves long renders without intermediate output).
     """
     if estimated_seconds <= 0:
-        total, inactivity = float(_CELL_TIMEOUT_DEFAULT), float(_CELL_INACTIVITY_TIMEOUT)
-    else:
-        total = max(estimated_seconds * 2, estimated_seconds + 30)
-        inactivity = max(estimated_seconds * 0.5, 30)
-        total, inactivity = float(total), float(inactivity)
-
-    # Boost for HTML output — these cells often write large files without printing
-    if expected_output and isinstance(expected_output, dict):
-        files = expected_output.get("files", [])
-        has_html = any(str(f).endswith((".html", ".htm")) for f in files)
-        if has_html:
-            inactivity = max(inactivity, 90.0)
-            total = max(total, 180.0)
-
-    return total, inactivity
+        return float(_CELL_TIMEOUT_DEFAULT), float(_CELL_INACTIVITY_TIMEOUT)
+    total = max(estimated_seconds * 2, estimated_seconds + 30)
+    inactivity = max(estimated_seconds * 0.5, 30)
+    return float(total), float(inactivity)
 
 
 _BOOT_SCRIPT_PATH = Path(__file__).parent / "scratchpad_boot.py"
@@ -436,7 +420,6 @@ class Scratchpad:
         estimated_time: str = "",
         estimated_seconds: int = 0,
         cancel_event: asyncio.Event | None = None,
-        expected_output: dict | None = None,
     ):
         """Async generator that sends code and yields progress strings and a final Cell.
 
@@ -459,9 +442,7 @@ class Scratchpad:
         self._proc.stdin.write(payload.encode())  # type: ignore[union-attr]
         await self._proc.stdin.drain()  # type: ignore[union-attr]
 
-        total_timeout, inactivity_timeout = _compute_timeouts(
-            estimated_seconds, expected_output=expected_output,
-        )
+        total_timeout, inactivity_timeout = _compute_timeouts(estimated_seconds)
 
         try:
             result_data: dict | None = None

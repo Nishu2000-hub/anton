@@ -178,10 +178,7 @@ SCRATCHPAD_TOOL = {
         "The total timeout scales from your estimated_execution_time_seconds "
         "(roughly 2x the estimate). You MUST provide estimated_execution_time_seconds "
         "for every exec call. For very long operations, provide a realistic estimate "
-        "and use progress() to keep the cell alive.\n\n"
-        "When a cell creates output files, declare expected_output with the file paths. "
-        "The runtime verifies these files exist after execution. If expected files include "
-        ".html, the inactivity timeout is automatically extended to 90s."
+        "and use progress() to keep the cell alive."
     ),
     "input_schema": {
         "type": "object",
@@ -206,25 +203,6 @@ SCRATCHPAD_TOOL = {
             "estimated_execution_time_seconds": {
                 "type": "integer",
                 "description": "Estimated execution time in seconds. Drives the total timeout (roughly 2x estimate). Use progress() for long cells.",
-            },
-            "expected_output": {
-                "type": "object",
-                "description": (
-                    "Optional. Declare what this cell intends to produce so the runtime "
-                    "can verify success and tune timeouts. If declared, the runtime checks "
-                    "that expected files actually exist after execution and reports mismatches."
-                ),
-                "properties": {
-                    "files": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "File paths this cell will create (relative or absolute).",
-                    },
-                    "opens_browser": {
-                        "type": "boolean",
-                        "description": "Whether this cell opens a file in the browser.",
-                    },
-                },
             },
         },
         "required": ["action", "name"],
@@ -344,11 +322,10 @@ async def prepare_scratchpad_exec(session: ChatSession, tc_input: dict):
             estimated_seconds = 0
 
     estimated_time = f"{estimated_seconds}s" if estimated_seconds > 0 else ""
-    expected_output = tc_input.get("expected_output")
-    return pad, code, description, estimated_time, estimated_seconds, expected_output
+    return pad, code, description, estimated_time, estimated_seconds
 
 
-def format_cell_result(cell, expected_output: dict | None = None) -> str:
+def format_cell_result(cell) -> str:
     """Format a Cell into a tool result string.
 
     Every section is labeled so the LLM can tell what came from where:
@@ -356,10 +333,7 @@ def format_cell_result(cell, expected_output: dict | None = None) -> str:
     [logs]   — library logging (httpx, urllib3, etc.) captured at INFO+
     [stderr] — warnings and stderr writes
     [error]  — Python traceback if the cell raised an exception
-    [verification] — expected output file checks (if declared)
     """
-    import os
-
     parts: list[str] = []
     if cell.stdout:
         stdout = cell.stdout
@@ -375,30 +349,6 @@ def format_cell_result(cell, expected_output: dict | None = None) -> str:
         parts.append(f"[stderr]\n{cell.stderr}")
     if cell.error:
         parts.append(f"[error]\n{cell.error}")
-
-    # Verify expected output files
-    if expected_output and isinstance(expected_output, dict):
-        expected_files = expected_output.get("files", [])
-        if expected_files:
-            verification_lines: list[str] = []
-            all_ok = True
-            for fpath in expected_files:
-                fpath = os.path.expanduser(fpath)
-                if not os.path.isabs(fpath):
-                    fpath = os.path.abspath(fpath)
-                if os.path.exists(fpath):
-                    size = os.path.getsize(fpath)
-                    if size == 0:
-                        verification_lines.append(f"WARNING: {fpath} exists but is EMPTY (0 bytes)")
-                        all_ok = False
-                    else:
-                        verification_lines.append(f"OK: {fpath} ({size:,} bytes)")
-                else:
-                    verification_lines.append(f"MISSING: {fpath} — expected file was NOT created")
-                    all_ok = False
-            status = "All expected files verified" if all_ok else "SOME EXPECTED FILES ARE MISSING OR EMPTY"
-            parts.append(f"[verification] {status}\n" + "\n".join(verification_lines))
-
     if not parts:
         return "Code executed successfully (no output)."
     return "\n".join(parts)
@@ -416,7 +366,7 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
         result = await prepare_scratchpad_exec(session, tc_input)
         if isinstance(result, str):
             return result
-        pad, code, description, estimated_time, estimated_seconds, expected_output = result
+        pad, code, description, estimated_time, estimated_seconds = result
 
         cell = await pad.execute(
             code,
@@ -424,7 +374,7 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
             estimated_time=estimated_time,
             estimated_seconds=estimated_seconds,
         )
-        return format_cell_result(cell, expected_output=expected_output)
+        return format_cell_result(cell)
 
     elif action == "view":
         pad = session._scratchpads._pads.get(name)
