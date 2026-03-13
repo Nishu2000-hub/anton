@@ -18,7 +18,7 @@ from anton.clipboard import (
     parse_dropped_paths as _parse_dropped_paths,
     save_clipboard_image,
 )
-from anton.llm.prompts import CHAT_SYSTEM_PROMPT
+from anton.llm.prompts import CHAT_SYSTEM_PROMPT, build_visualizations_prompt
 from anton.llm.provider import (
     ContextOverflowError,
     StreamComplete,
@@ -83,12 +83,14 @@ class ChatSession:
         initial_history: list[dict] | None = None,
         history_store: HistoryStore | None = None,
         session_id: str | None = None,
+        proactive_dashboards: bool = False,
     ) -> None:
         self._llm = llm_client
         self._self_awareness = self_awareness
         self._cortex = cortex
         self._episodic = episodic
         self._runtime_context = runtime_context
+        self._proactive_dashboards = proactive_dashboards
         self._workspace = workspace
         self._console = console
         self._history: list[dict] = list(initial_history) if initial_history else []
@@ -152,6 +154,7 @@ class ChatSession:
     async def _build_system_prompt(self, user_message: str = "") -> str:
         prompt = CHAT_SYSTEM_PROMPT.format(
             runtime_context=self._runtime_context,
+            visualizations_section=build_visualizations_prompt(self._proactive_dashboards),
         )
         # Inject memory context (replaces old self_awareness)
         if self._cortex is not None:
@@ -836,6 +839,7 @@ def _rebuild_session(
         coding_api_key=api_key,
         history_store=history_store,
         session_id=session_id,
+        proactive_dashboards=settings.proactive_dashboards,
     )
 
 
@@ -2030,6 +2034,7 @@ async def _chat_loop(console: Console, settings: AntonSettings, *, resume: bool 
         coding_api_key=coding_api_key,
         history_store=history_store,
         session_id=current_session_id,
+        proactive_dashboards=settings.proactive_dashboards,
     )
 
     # Handle --resume flag at startup

@@ -44,6 +44,8 @@ class AntonSettings(BaseSettings):
 
     episodic_memory: bool = True  # episodic memory archive — on by default
 
+    proactive_dashboards: bool = False  # when True, build HTML dashboards; when False, CLI output only
+
     theme: str = "auto"
 
     disable_autoupdates: bool = False
