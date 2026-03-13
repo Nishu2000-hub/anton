@@ -101,7 +101,7 @@ def _ensure_dependencies(console: Console) -> None:
             )
             if result.returncode == 0:
                 console.print("[anton.success]  Dependencies installed.[/]")
-                console.print("[anton.muted]  Please restart anton.[/]")
+                os.execv(sys.executable, [sys.executable, "-m", "anton"] + sys.argv[1:])
             else:
                 console.print(f"[anton.error]  Install failed:[/]")
                 console.print(result.stderr.decode() if result.stderr else result.stdout.decode())
