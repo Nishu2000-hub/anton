@@ -743,16 +743,16 @@ class Scratchpad:
             except (ProcessLookupError, asyncio.TimeoutError):
                 pass
         # Close transport pipes to prevent "Event loop is closed" noise
-        # from __del__ during Python shutdown.
+        # from __del__ during Python shutdown.  Only stdin (a StreamWriter)
+        # has .close(); stdout/stderr are StreamReaders with no close method.
         if self._proc is not None:
-            for attr in ("stdin", "stdout", "stderr"):
-                pipe = getattr(self._proc, attr, None)
-                if pipe is not None:
-                    if hasattr(pipe, "is_closing"):
-                        if not pipe.is_closing():
-                            pipe.close()
-                    else:
+            pipe = self._proc.stdin
+            if pipe is not None:
+                if hasattr(pipe, "is_closing"):
+                    if not pipe.is_closing():
                         pipe.close()
+                else:
+                    pipe.close()
         self._proc = None
         if self._boot_path is not None:
             try:
