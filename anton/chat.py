@@ -2712,6 +2712,34 @@ async def _handle_add_custom_datasource(
         if value:
             credentials[f.name] = value
 
+    # Prompt for any required non-secret fields not provided inline
+    for f, raw in zip(fields, raw_fields):
+        if f.secret:
+            continue  # already handled above
+        if not f.required:
+            continue  # optional fields handled below
+        if f.name in credentials:
+            continue  # already collected inline
+        value = Prompt.ask(
+            f"[anton.cyan](anton)[/] {f.name}",
+            console=console,
+            default="",
+        )
+        if value:
+            credentials[f.name] = value
+
+    # Offer to collect optional non-secret fields
+    for f, raw in zip(fields, raw_fields):
+        if f.secret or f.required or f.name in credentials:
+            continue
+        value = Prompt.ask(
+            f"[anton.cyan](anton)[/] {f.name} (optional — press Enter to skip)",
+            console=console,
+            default="",
+        )
+        if value:
+            credentials[f.name] = value
+
     if not credentials:
         console.print("[anton.warning]        No credentials collected. Aborting.[/]")
         console.print()
@@ -2764,6 +2792,16 @@ async def _handle_add_custom_datasource(
             pip=pip_pkg,
             fields=fields,
         )
+
+    # All required fields must be present before the caller saves credentials
+    missing_required = [f.name for f in fields if f.required and f.name not in credentials]
+    if missing_required:
+        console.print(
+            "[anton.warning]    Cannot save — missing required fields: "
+            f"{', '.join(missing_required)}. Aborting.[/]"
+        )
+        console.print()
+        return None
 
     return engine_def, credentials
 

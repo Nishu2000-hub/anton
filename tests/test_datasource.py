@@ -14,6 +14,7 @@ from anton.chat import (
     _DS_KNOWN_VARS,
     _DS_SECRET_VARS,
     _build_datasource_context,
+    _handle_add_custom_datasource,
     _handle_connect_datasource,
     _handle_list_data_sources,
     _handle_remove_data_source,
@@ -1638,3 +1639,152 @@ class TestStaleDsRegistrationState:
 
         assert len(_DS_SECRET_VARS) == count_after_first
         assert len(_DS_KNOWN_VARS) == known_after_first
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestAddCustomDatasourceFlow
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestAddCustomDatasourceFlow:
+    """Tests for _handle_add_custom_datasource field-collection logic."""
+
+    def _make_llm_response(
+        self, fields: list[dict], display_name: str = "MyDB"
+    ) -> str:
+        """Return a JSON string mimicking the LLM's plan() response."""
+        import json as _json
+        return _json.dumps(
+            {"display_name": display_name, "pip": "", "fields": fields}
+        )
+
+    def _make_registry(self, tmp_path):
+        """Return a minimal registry mock that accepts any slug."""
+        reg = MagicMock()
+        reg.validate_file.return_value = {"mydb": MagicMock()}
+        reg.reload.return_value = None
+        reg.get.return_value = None  # triggers inline fallback
+        return reg
+
+    def _make_llm(self, json_text: str):
+        """Return an AsyncMock LLM whose plan() returns json_text."""
+        llm = AsyncMock()
+        response = MagicMock()
+        response.content = json_text
+        llm.plan = AsyncMock(return_value=response)
+        return llm
+
+    def _mock_ds_path(self, mock_path_cls, tmp_path):
+        """Wire Path mock so datasources.md writes go to tmp_path."""
+        mock_ds = MagicMock()
+        mock_ds.is_file.return_value = False
+        mock_ds.with_suffix.return_value = tmp_path / "datasources.tmp"
+        mock_path_cls.return_value.expanduser.return_value = mock_ds
+
+    @pytest.mark.asyncio
+    async def test_missing_required_non_secret_field_prompts_user(
+        self, tmp_path, make_session
+    ):
+        """Required non-secret field without inline value triggers Prompt.ask."""
+        session = make_session()
+        session._llm = self._make_llm(self._make_llm_response([
+            {
+                "name": "host", "value": "", "secret": False,
+                "required": True, "description": "hostname",
+            },
+        ]))
+        console = MagicMock()
+        registry = self._make_registry(tmp_path)
+
+        # first response: initial auth question; second: the host field prompt
+        prompt_responses = iter(["I want to connect to mydb", "localhost"])
+
+        with (
+            patch(
+                "rich.prompt.Prompt.ask",
+                side_effect=lambda *a, **kw: next(prompt_responses),
+            ),
+            patch("anton.chat.Path") as mock_path_cls,
+        ):
+            self._mock_ds_path(mock_path_cls, tmp_path)
+            result = await _handle_add_custom_datasource(
+                console, "mydb", registry, session
+            )
+
+        assert result is not None
+        _, credentials = result
+        assert credentials["host"] == "localhost"
+
+    @pytest.mark.asyncio
+    async def test_missing_required_secret_field_prompts_user(
+        self, tmp_path, make_session
+    ):
+        """Required secret field without inline value triggers password prompt."""
+        session = make_session()
+        session._llm = self._make_llm(self._make_llm_response([
+            {
+                "name": "api_key", "value": "", "secret": True,
+                "required": True, "description": "API key",
+            },
+        ]))
+        console = MagicMock()
+        registry = self._make_registry(tmp_path)
+
+        password_calls = []
+
+        def fake_prompt(*args, **kwargs):
+            if kwargs.get("password"):
+                password_calls.append(kwargs)
+                return "mysecret"
+            return "I want to connect"
+
+        with (
+            patch("rich.prompt.Prompt.ask", side_effect=fake_prompt),
+            patch("anton.chat.Path") as mock_path_cls,
+        ):
+            self._mock_ds_path(mock_path_cls, tmp_path)
+            result = await _handle_add_custom_datasource(
+                console, "mydb", registry, session
+            )
+
+        assert result is not None
+        _, credentials = result
+        assert credentials["api_key"] == "mysecret"
+        assert len(password_calls) == 1, "expected exactly one password prompt"
+
+    @pytest.mark.asyncio
+    async def test_incomplete_custom_datasource_not_saved(
+        self, tmp_path, make_session
+    ):
+        """Empty responses for all required fields causes a hard stop (None)."""
+        session = make_session()
+        session._llm = self._make_llm(self._make_llm_response([
+            {
+                "name": "host", "value": "", "secret": False,
+                "required": True, "description": "hostname",
+            },
+            {
+                "name": "api_key", "value": "", "secret": True,
+                "required": True, "description": "API key",
+            },
+        ]))
+        console = MagicMock()
+        registry = self._make_registry(tmp_path)
+
+        # User presses Enter (empty) for every prompt
+        prompt_responses = iter(["I want to connect", "", ""])
+
+        with (
+            patch(
+                "rich.prompt.Prompt.ask",
+                side_effect=lambda *a, **kw: next(prompt_responses),
+            ),
+            patch("anton.chat.Path") as mock_path_cls,
+        ):
+            self._mock_ds_path(mock_path_cls, tmp_path)
+            result = await _handle_add_custom_datasource(
+                console, "mydb", registry, session
+            )
+
+        # Must return None — caller must not call vault.save()
+        assert result is None
