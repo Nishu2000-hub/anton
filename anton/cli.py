@@ -319,13 +319,27 @@ def _ensure_minds_api_key(settings, ws) -> None:
     ws.set_secret("ANTON_MINDS_URL", minds_url)
 
     # Test if the Minds server supports LLM endpoints (_code_/_reason_)
+    from rich.prompt import Confirm
+
     from anton.chat import _minds_test_llm
     ssl_verify = True
     llm_ok = _minds_test_llm(minds_url, api_key, verify=True)
     if not llm_ok:
-        llm_ok = _minds_test_llm(minds_url, api_key, verify=False)
-        if llm_ok:
-            ssl_verify = False
+        # SSL verification failed — check if the server is reachable without it
+        llm_ok_no_ssl = _minds_test_llm(minds_url, api_key, verify=False)
+        if llm_ok_no_ssl:
+            console.print("[anton.warning]SSL certificate verification failed for this server.[/]")
+            skip_ssl = Confirm.ask(
+                "Continue without verifying SSL certificates?",
+                default=False,
+                console=console,
+            )
+            if skip_ssl:
+                ssl_verify = False
+                llm_ok = True
+            else:
+                console.print("[anton.error]Cannot connect with SSL verification. Check your server certificate.[/]")
+                llm_ok = False
 
     if llm_ok:
         console.print("[anton.success]LLM endpoints available — using Minds server as LLM provider.[/]")
