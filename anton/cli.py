@@ -236,57 +236,71 @@ def _has_api_key(settings) -> bool:
     return True
 
 
+def _typewrite(text: str, delay: float = 0.02) -> None:
+    """Print text character by character with a typing effect."""
+    import sys
+    import time
+
+    for ch in text:
+        sys.stdout.write(ch)
+        sys.stdout.flush()
+        time.sleep(delay)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
 def _onboard(settings) -> None:
-    """First-time onboarding: robot intro + LLM provider selection."""
+    """First-time onboarding: animated robot + typed intro + LLM provider selection."""
+    import sys
+    import time
+
     from rich.prompt import Prompt
-    from rich.text import Text
 
     from anton import __version__
-    from anton.channel.branding import _render_robot_static
+    from anton.channel.branding import render_banner
     from anton.workspace import Workspace
 
     ws = Workspace(Path.home())
-
-    # Robot on the left, intro text on the right
     g = "anton.glow"
-    m = "anton.muted"
 
-    # Build robot lines (static, no animation for clean layout)
-    robot_lines = [
-        f"[{g}]        \u2590[/]",
-        f"[{g}]   \u2584\u2588\u2580\u2588\u2588\u2580\u2588\u2584[/]   [{g}]\u2661\u2661\u2661\u2661[/]",
-        f"[{g}] \u2588\u2588[/]  [{m}](\u00b0\u1d17\u00b0)[/] [{g}]\u2588\u2588[/]",
-        f"[{g}]   \u2580\u2588\u2584\u2588\u2588\u2584\u2588\u2580[/]"
-        f"          [{g}]\u2584\u2580\u2588 \u2588\u2584 \u2588 \u2580\u2588\u2580 \u2588\u2580\u2588 \u2588\u2584 \u2588[/]",
-        f"[{g}]    \u2590   \u2590[/]"
-        f"            [{g}]\u2588\u2580\u2588 \u2588 \u2580\u2588  \u2588  \u2588\u2584\u2588 \u2588 \u2580\u2588[/]",
-        f"[{g}]    \u2590   \u2590[/]",
-        f"[{g}] {'━' * 40}[/]",
-        f" v{__version__}",
-    ]
-
-    for line in robot_lines:
-        console.print(line)
+    # Animated robot banner (same as normal launch)
+    render_banner(console)
 
     console.print()
-    console.print(
-        "[anton.cyan]Anton[/] is an autonomous AI coworker built by "
-        "[bold anton.cyan]MindsDB[/]."
-    )
-    console.print()
-    console.print(
-        "For the best experience, we recommend [bold anton.cyan]MindsDB Cloud[/] "
-        "[anton.muted](mdb.ai)[/]"
-    )
-    console.print(
-        "as your LLM provider. It is optimized for Anton with:"
-    )
-    console.print()
-    console.print("  [anton.success]\u2713[/] Smart model routing")
-    console.print("  [anton.success]\u2713[/] Faster responses")
-    console.print("  [anton.success]\u2713[/] Cost optimized")
-    console.print()
 
+    # Type out the intro
+    if sys.stdout.isatty():
+        _typewrite("Anton is an autonomous AI coworker built by MindsDB.")
+        time.sleep(0.3)
+        console.print()
+        _typewrite("For the best experience, we recommend MindsDB Cloud (mdb.ai)")
+        _typewrite("as your LLM provider. It is optimized for Anton with:")
+        time.sleep(0.2)
+        console.print()
+        for line in [
+            "  \u2713 Smart model routing",
+            "  \u2713 Faster responses",
+            "  \u2713 Cost optimized",
+        ]:
+            _typewrite(line, delay=0.015)
+            time.sleep(0.1)
+    else:
+        console.print(
+            "[anton.cyan]Anton[/] is an autonomous AI coworker built by "
+            "[bold anton.cyan]MindsDB[/]."
+        )
+        console.print()
+        console.print(
+            "For the best experience, we recommend [bold anton.cyan]MindsDB Cloud[/] "
+            "[anton.muted](mdb.ai)[/]"
+        )
+        console.print("as your LLM provider. It is optimized for Anton with:")
+        console.print()
+        console.print("  [anton.success]\u2713[/] Smart model routing")
+        console.print("  [anton.success]\u2713[/] Faster responses")
+        console.print("  [anton.success]\u2713[/] Cost optimized")
+
+    console.print()
     console.print(f"[{g}] {'━' * 40}[/]")
     console.print()
 
@@ -327,11 +341,14 @@ def _setup_minds(settings, ws) -> None:
     """Set up Minds (mdb.ai) as the LLM provider."""
     from rich.prompt import Confirm, Prompt
 
+    import webbrowser
+
     console.print()
     console.print(
         "  [anton.muted]Don't have a key yet? Create one in seconds at[/]"
         " [link=https://mdb.ai][bold anton.cyan]mdb.ai[/][/link]"
     )
+    webbrowser.open("https://mdb.ai")
     console.print()
     api_key = Prompt.ask("  [anton.cyan]API key[/]", console=console)
     if not api_key.strip():
