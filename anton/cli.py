@@ -328,7 +328,12 @@ def _setup_minds(settings, ws) -> None:
     from rich.prompt import Confirm, Prompt
 
     console.print()
-    api_key = Prompt.ask("  [anton.cyan]Minds API key[/]", console=console)
+    console.print(
+        "  [anton.muted]Don't have a key yet? Create one in seconds at[/]"
+        " [link=https://mdb.ai][bold anton.cyan]mdb.ai[/][/link]"
+    )
+    console.print()
+    api_key = Prompt.ask("  [anton.cyan]API key[/]", console=console)
     if not api_key.strip():
         console.print("  [anton.error]No API key provided.[/]")
         raise typer.Exit(1)
