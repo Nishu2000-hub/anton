@@ -393,10 +393,16 @@ def _animate_onboard(console, version: str, intro_lines: list[str], *, settings,
 
     # Summary
     console.print()
+    console.print(f"[anton.glow] {'━' * 40}[/]")
+    console.print()
     provider_label = settings.planning_provider
     model_label = settings.planning_model
     if provider_label == "openai-compatible":
-        provider_label = "MindsDB Cloud"
+        if settings.minds_url and "mdb.ai" in settings.minds_url:
+            provider_label = "MindsDB Cloud"
+        else:
+            provider_label = "MindsDB Enterprise Server"
+        model_label = "smart_router"
     console.print(
         f"  [anton.muted]Provider[/]  [anton.cyan]{provider_label}[/]"
         f"   [anton.muted]Model[/]  [anton.cyan]{model_label}[/]"
@@ -410,6 +416,44 @@ class _SetupRetry(Exception):
     pass
 
 
+def _setup_prompt(label: str, default: str | None = None) -> str:
+    """Prompt for input with ESC-to-go-back and a bottom toolbar hint.
+
+    Returns the user's input string.
+    Raises _SetupRetry if the user presses ESC.
+    """
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.formatted_text import HTML
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.styles import Style as PTStyle
+
+    bindings = KeyBindings()
+
+    @bindings.add("escape")
+    def _on_esc(event):
+        event.app.exit(exception=_SetupRetry())
+
+    pt_style = PTStyle.from_dict({
+        "bottom-toolbar": "noreverse nounderline bg:default",
+    })
+
+    def _toolbar():
+        return HTML("<style fg='#555570'>  press ESC to go back</style>")
+
+    suffix = f" ({default}): " if default else ": "
+    session: PromptSession[str] = PromptSession(
+        mouse_support=False,
+        bottom_toolbar=_toolbar,
+        style=pt_style,
+        key_bindings=bindings,
+    )
+
+    result = session.prompt(f"  {label}{suffix}")
+    if not result and default:
+        return default
+    return result
+
+
 def _setup_minds(settings, ws, *, default_url: str | None = "https://mdb.ai") -> None:
     """Set up Minds as the LLM provider (cloud or enterprise)."""
     from rich.prompt import Confirm, Prompt
@@ -418,10 +462,7 @@ def _setup_minds(settings, ws, *, default_url: str | None = "https://mdb.ai") ->
 
     console.print()
 
-    prompt_kwargs = {"console": console}
-    if default_url:
-        prompt_kwargs["default"] = default_url
-    minds_url = Prompt.ask("  [anton.cyan]Server URL[/]", **prompt_kwargs).strip()
+    minds_url = _setup_prompt("Server URL", default=default_url).strip()
     if not minds_url.startswith("http://") and not minds_url.startswith("https://"):
         minds_url = "https://" + minds_url
     minds_url = minds_url.rstrip("/")
@@ -439,7 +480,7 @@ def _setup_minds(settings, ws, *, default_url: str | None = "https://mdb.ai") ->
         console.print()
 
     while True:
-        api_key = Prompt.ask("  [anton.cyan]API key[/]", console=console)
+        api_key = _setup_prompt("API key")
         if api_key.strip():
             break
         console.print("  [anton.warning]Please enter your API key.[/]")
@@ -543,17 +584,17 @@ def _validate_with_spinner(console, label: str, fn) -> None:
 
 def _setup_anthropic(settings, ws) -> None:
     """Set up Anthropic with a single model for both reasoning and coding."""
-    from rich.prompt import Confirm, Prompt
+    from rich.prompt import Confirm
 
     console.print()
     while True:
-        api_key = Prompt.ask("  [anton.cyan]API key[/]", console=console)
+        api_key = _setup_prompt("API key")
         if api_key.strip():
             break
         console.print("  [anton.warning]Please enter your API key.[/]")
     api_key = api_key.strip()
 
-    model = Prompt.ask("  [anton.cyan]Model[/]", default="claude-sonnet-4-6", console=console).strip()
+    model = _setup_prompt("Model", default="claude-sonnet-4-6").strip()
 
     try:
         def _test():
@@ -585,17 +626,17 @@ def _setup_anthropic(settings, ws) -> None:
 
 def _setup_openai(settings, ws) -> None:
     """Set up OpenAI with a single model for both reasoning and coding."""
-    from rich.prompt import Confirm, Prompt
+    from rich.prompt import Confirm
 
     console.print()
     while True:
-        api_key = Prompt.ask("  [anton.cyan]API key[/]", console=console)
+        api_key = _setup_prompt("API key")
         if api_key.strip():
             break
         console.print("  [anton.warning]Please enter your API key.[/]")
     api_key = api_key.strip()
 
-    model = Prompt.ask("  [anton.cyan]Model[/]", default="gpt-4o", console=console).strip()
+    model = _setup_prompt("Model", default="gpt-4o").strip()
 
     try:
         def _test():
@@ -630,7 +671,7 @@ def setup(ctx: typer.Context) -> None:
     """Configure provider, model, and API key."""
     settings = _get_settings(ctx)
     _ensure_workspace(settings)
-    _ensure_api_key(settings)
+    _onboard(settings)
     console.print("[anton.success]Setup complete.[/]")
 
 
