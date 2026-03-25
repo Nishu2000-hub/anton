@@ -6,7 +6,6 @@ import os
 import re as _re
 import sys
 import uuid
-from warnings import deprecated
 import yaml as _yaml
 import time
 from collections.abc import AsyncIterator, Callable
@@ -1963,7 +1962,7 @@ def _display_value(key: str, value: str) -> str:
     return value or "[dim]<empty>[/]"
 
 
-@deprecated("The /data-connections menu is deprecated and will be removed in a future release.")
+#TODO: The /data-connections menu is deprecated and will be removed in a future release.
 async def _handle_data_connections(
     console: Console,
     settings: AntonSettings,
