@@ -3604,9 +3604,9 @@ def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
     console.print("[anton.cyan]Available commands:[/]")
-#    console.print(
-#        "  [bold]/connect[/]                — Connect to a Minds server and select a mind"
-#    )
+    console.print(
+       "  [bold]/minds[/]                — Connect to existing mind"
+    )
     console.print("  [bold]/connect[/]      — Connect a database or API to the Local Vault")
     console.print("  [bold]/list[/]         — List all saved data source connections")
     console.print("  [bold]/edit[/]         — Edit a saved connection's credentials")
@@ -3986,20 +3986,19 @@ async def _chat_loop(
             if message_content is None and stripped.startswith("/"):
                 parts = stripped.split(maxsplit=1)
                 cmd = parts[0].lower()
-#                if cmd == "/connect":
-#                    session = await _handle_connect(
-#                        console,
-#                        settings,
-#                        workspace,
-#                        state,
-#                        self_awareness,
-#                        cortex,
-#                        session,
-#                        episodic=episodic,
-#                    )
-#                    continue
-#                elif cmd == "/setup":
-                if cmd == "/setup":
+                if cmd == "/minds":
+                    session = await _handle_connect(
+                        console,
+                        settings,
+                        workspace,
+                        state,
+                        self_awareness,
+                        cortex,
+                        session,
+                        episodic=episodic,
+                    )
+                    continue
+                elif cmd == "/setup":
                     session = await _handle_setup(
                         console,
                         settings,
