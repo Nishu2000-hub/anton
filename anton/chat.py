@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json as _json
 import os
 import re as _re
@@ -52,6 +53,10 @@ from anton.datasource_registry import (
     _YAML_BLOCK_RE,
 )
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style as PTStyle
 from rich.prompt import Confirm, Prompt
 
 if TYPE_CHECKING:
@@ -77,6 +82,12 @@ _RESILIENCE_NUDGE = (
     "a public API, archive.org, an alternate library, or a completely different data source. "
     "Only involve the user if the problem truly requires something only they can provide."
 )
+
+# ── Interactive prompt copy ───────────────────────────────────────────────────
+_PROMPT_YN = "(y/n)"
+_PROMPT_RECONNECT_CANCEL = "(reconnect/cancel)"
+_PROMPT_SELECT_Q = "(or q to cancel)"
+_PROMPT_MEMORY_SAVE = "(y/n/pick numbers)"
 
 
 class ChatSession:
@@ -1710,6 +1721,62 @@ def _mask_secret(value: str, *, keep: int = 4) -> str:
     return f"{value[:keep]}...{value[-keep:]}"
 
 
+def _prompt_or_cancel(
+    label: str,
+    *,
+    default: str = "",
+    password: bool = False,
+) -> str | None:
+    """Prompt for free-text input; return None if the user presses Esc.
+
+    Uses the same ESC-detection pattern as _setup_prompt() in cli.py:
+    a prompt_toolkit session with an Esc key binding that exits the session
+    and signals cancellation. Works from both sync and async contexts.
+    """
+    _esc = False
+    bindings = KeyBindings()
+
+    @bindings.add("escape")
+    @bindings.add("c-c")
+    def _on_esc(event):
+        nonlocal _esc
+        _esc = True
+        event.app.exit(result="")
+
+    pt_style = PTStyle.from_dict({"bottom-toolbar": "noreverse nounderline bg:default"})
+
+    def _toolbar():
+        return HTML("<style fg='#5f9ea0' italic='true'>Esc to cancel</style>")
+
+    suffix = f" ({default}): " if default else ": "
+    session: PromptSession[str] = PromptSession(
+        mouse_support=False,
+        bottom_toolbar=_toolbar,
+        style=pt_style,
+        key_bindings=bindings,
+        is_password=password,
+    )
+
+    try:
+        asyncio.get_running_loop()
+        in_async = True
+    except RuntimeError:
+        in_async = False
+
+    if in_async:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(session.prompt, f"{label}{suffix}")
+            result = fut.result()
+    else:
+        result = session.prompt(f"{label}{suffix}")
+
+    if _esc:
+        return None
+    if not result and default:
+        return default
+    return result
+
+
 def _prompt_minds_api_key(
     console: Console,
     *,
@@ -2617,26 +2684,23 @@ async def _handle_add_custom_datasource(
     """Ask for the tool name, use the LLM to identify required fields, then collect credentials."""
 
     console.print()
-    preamble = "[anton.cyan](anton)[/] "
     if name:
         tool_name = name
         name_context = f"'{name}' isn't in my built-in list.\n        "
     else:
-        tool_name = Prompt.ask(
-            f"{preamble}What is the name of the tool or service?",
-            console=console,
+        tool_name = _prompt_or_cancel(
+            "(anton) What is the name of the tool or service?",
         )
-        if not tool_name.strip():
+        if not tool_name or not tool_name.strip():
             return None
         tool_name = tool_name.strip()
         name_context = ""
 
-    user_answer = Prompt.ask(
-        f"{preamble}{name_context}How do you authenticate with it? "
+    user_answer = _prompt_or_cancel(
+        f"(anton) {name_context}How do you authenticate with it? "
         "Describe what credentials you have (don't paste actual values)",
-        console=console,
     )
-    if not user_answer.strip():
+    if not user_answer or not user_answer.strip():
         return None
 
     console.print()
@@ -2878,16 +2942,10 @@ async def _run_connection_test(
             console.print()
             console.print(f"        Error: {last_line}")
             console.print()
-            retry = (
-                Prompt.ask(
-                    "[anton.cyan](anton)[/] Would you like to re-enter your credentials? [y/n]",
-                    console=console,
-                    default="n",
-                )
-                .strip()
-                .lower()
+            retry = _prompt_or_cancel(
+                "(anton) Would you like to re-enter your credentials? (y/n)",
             )
-            if retry != "y":
+            if retry is None or retry.strip().lower() != "y":
                 return False
             console.print()
             for f in retry_fields:
@@ -3050,10 +3108,11 @@ async def _handle_connect_datasource(
         for i, e in enumerate(all_engines, 1):
             console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
         console.print()
-        answer = Prompt.ask(
-            "[anton.cyan](anton)[/] Enter a number or type a name",
-            console=console,
+        answer = _prompt_or_cancel(
+            "(anton) Enter a number or type a name",
         )
+        if answer is None:
+            return session
 
     stripped_answer = answer.strip()
     known_slugs = {f"{c['engine']}-{c['name']}": c for c in vault.list_connections()}
@@ -3140,16 +3199,10 @@ async def _handle_connect_datasource(
                 console.print(
                     f'[anton.cyan](anton)[/] Did you mean [bold]"{suggestion.display_name}"[/bold]?'
                 )
-                confirm = (
-                    Prompt.ask(
-                        "[anton.cyan](anton)[/] [y/n]",
-                        console=console,
-                        default="n",
-                    )
-                    .strip()
-                    .lower()
+                confirm = _prompt_or_cancel(
+                    "(anton) Use this datasource? (y/n)",
                 )
-                if confirm == "y":
+                if confirm is not None and confirm.strip().lower() == "y":
                     engine_def = suggestion
                     break
 
@@ -3245,14 +3298,12 @@ async def _handle_connect_datasource(
 
     console.print()
 
-    mode_answer = (
-        Prompt.ask(
-            "[anton.cyan](anton)[/] Do you have these available? [y/n/<list params>]",
-            console=console,
-        )
-        .strip()
-        .lower()
+    mode_answer = _prompt_or_cancel(
+        "(anton) Do you have these available? (y/n/<list params>)",
     )
+    if mode_answer is None:
+        return session
+    mode_answer = mode_answer.strip().lower()
 
     if mode_answer == "n":
         console.print()
@@ -3331,16 +3382,10 @@ async def _handle_connect_datasource(
             f'[anton.warning](anton)[/] A connection [bold]"{slug}"[/bold] already exists.'
         )
         console.print()
-        choice = (
-            Prompt.ask(
-                "[anton.cyan](anton)[/] [reconnect/cancel]",
-                console=console,
-                default="cancel",
-            )
-            .strip()
-            .lower()
+        choice = _prompt_or_cancel(
+            f"(anton) {_PROMPT_RECONNECT_CANCEL}",
         )
-        if choice != "reconnect":
+        if choice is None or choice.strip().lower() != "reconnect":
             console.print("[anton.muted]Cancelled.[/]")
             console.print()
             return session
@@ -3819,10 +3864,6 @@ async def _chat_loop(
 
     toolbar = {"stats": "", "status": ""}
     display = StreamDisplay(console, toolbar=toolbar)
-
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.formatted_text import HTML
-    from prompt_toolkit.styles import Style as PTStyle
 
     def _bottom_toolbar():
         stats = toolbar["stats"]
