@@ -3067,24 +3067,6 @@ async def _handle_connect_datasource(
             for i, e in enumerate(popular_engines, 1):
                 console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
             console.print()
-        if other_engines:
-            start = len(popular_engines) + 1
-            console.print("       [bold]  Other connectors")
-            for i, e in enumerate(other_engines[:3], start):
-                console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
-            if len(other_engines) > 3:
-                console.print(
-                    f"          [anton.muted]   … and"
-                    f" {len(other_engines) - 3} more"
-                    f" (type 'all' to see all)[/]"
-                )
-            console.print()
-        if custom_engines:
-            start = len(popular_engines) + len(other_engines) + 1
-            console.print("       [bold]  Custom")
-            for i, e in enumerate(custom_engines, start):
-                console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
-            console.print()
 
     def _print_all() -> None:
         console.print(
