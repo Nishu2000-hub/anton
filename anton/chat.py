@@ -52,7 +52,11 @@ from anton.datasource_registry import (
     _YAML_BLOCK_RE,
 )
 
-from rich.prompt import Confirm, Prompt
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style as PTStyle
+from rich.prompt import Confirm
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -77,6 +81,12 @@ _RESILIENCE_NUDGE = (
     "a public API, archive.org, an alternate library, or a completely different data source. "
     "Only involve the user if the problem truly requires something only they can provide."
 )
+
+# ── Interactive prompt copy ───────────────────────────────────────────────────
+_PROMPT_YN = "(y/n)"
+_PROMPT_RECONNECT_CANCEL = "(reconnect/cancel)"
+_PROMPT_SELECT_Q = "(or q to cancel)"
+_PROMPT_MEMORY_SAVE = "(y/n/pick numbers)"
 
 
 class ChatSession:
@@ -1372,7 +1382,6 @@ async def _handle_resume(
 
     Returns (new_session, resumed_session_id) or (original_session, None).
     """
-    from rich.prompt import Prompt
     from rich.table import Table
 
     if history_store is None:
@@ -1404,14 +1413,8 @@ async def _handle_resume(
     console.print()
 
     choices = [str(i) for i in range(1, len(sessions) + 1)] + ["q"]
-    choice = Prompt.ask(
-        "Select session (or q to cancel)",
-        choices=choices,
-        default="q",
-        console=console,
-    )
-
-    if choice == "q":
+    choice = await _prompt_or_cancel("(anton) Select session (or q to cancel)", choices=choices, default="q")
+    if choice is None or choice == "q":
         console.print()
         return session, None
 
@@ -1470,8 +1473,6 @@ async def _handle_setup(
     session_id: str | None = None,
 ) -> ChatSession:
     """Interactive setup wizard with sub-menu: Models, Memory, or Minds."""
-    from rich.prompt import Prompt
-
     console.print()
     console.print("[anton.cyan]/setup[/]")
     console.print()
@@ -1481,12 +1482,10 @@ async def _handle_setup(
     console.print("    [bold]q[/]  Back")
     console.print()
 
-    top_choice = Prompt.ask(
-        "Select",
-        choices=["1", "2", "q"],
-        default="q",
-        console=console,
-    )
+    top_choice = await _prompt_or_cancel("(anton) Select", choices=["1", "2", "q"], default="q")
+    if top_choice is None:
+        console.print()
+        return session
 
     if top_choice == "q":
         console.print()
@@ -1505,7 +1504,7 @@ async def _handle_setup(
             session_id=session_id,
         )
     else:
-        _handle_setup_memory(console, settings, workspace, cortex, episodic=episodic)
+        await _handle_setup_memory(console, settings, workspace, cortex, episodic=episodic)
         return session
 
 
@@ -1522,8 +1521,6 @@ async def _handle_setup_models(
     session_id: str | None = None,
 ) -> ChatSession:
     """Setup sub-menu: provider, API key, and models."""
-    from rich.prompt import Prompt
-
     from anton.workspace import Workspace as _Workspace
     from anton.cli import _SetupRetry, _setup_minds, _setup_other_provider
 
@@ -1584,14 +1581,8 @@ async def _handle_setup_models(
     _print_choices()
 
     while True:
-        choice = Prompt.ask(
-            "Choose LLM Provider",
-            choices=["1", "2", "3", "q"],
-            default="q",
-            console=console,
-        )
-
-        if choice == "q":
+        choice = await _prompt_or_cancel("(anton) Choose LLM Provider", choices=["1", "2", "3", "q"], default="q")
+        if choice is None or choice == "q":
             return session
 
         try:
@@ -1626,7 +1617,7 @@ async def _handle_setup_models(
     )
 
 
-def _handle_setup_memory(
+async def _handle_setup_memory(
     console: Console,
     settings: AntonSettings,
     workspace: Workspace,
@@ -1634,8 +1625,6 @@ def _handle_setup_memory(
     episodic: EpisodicMemory | None = None,
 ) -> None:
     """Setup sub-menu: memory mode and episodic memory toggle."""
-    from rich.prompt import Prompt
-
     console.print()
     console.print("[anton.cyan]Memory configuration[/]")
     console.print()
@@ -1657,12 +1646,10 @@ def _handle_setup_memory(
     current_mode_num = {"autopilot": "1", "copilot": "2", "off": "3"}.get(
         settings.memory_mode, "1"
     )
-    mode_choice = Prompt.ask(
-        "  Memory mode",
-        choices=["1", "2", "3"],
-        default=current_mode_num,
-        console=console,
-    )
+    mode_choice = await _prompt_or_cancel("(anton) Memory mode", choices=["1", "2", "3"], default=current_mode_num)
+    if mode_choice is None:
+        console.print()
+        return
     memory_mode = mode_map[mode_choice]
     settings.memory_mode = memory_mode
     workspace.set_secret("ANTON_MEMORY_MODE", memory_mode)
@@ -1676,12 +1663,9 @@ def _handle_setup_memory(
         console.print(
             f"  Episodic memory (conversation archive): Currently [bold]{ep_status}[/]"
         )
-        toggle = Prompt.ask(
-            "  Toggle episodic memory? (y/n)",
-            choices=["y", "n"],
-            default="n",
-            console=console,
-        )
+        toggle = await _prompt_or_cancel("(anton) Toggle episodic memory? (y/n)", choices=["y", "n"], default="n")
+        if toggle is None:
+            toggle = "n"
         if toggle == "y":
             new_state = not episodic.enabled
             episodic.enabled = new_state
@@ -1710,26 +1694,81 @@ def _mask_secret(value: str, *, keep: int = 4) -> str:
     return f"{value[:keep]}...{value[-keep:]}"
 
 
-def _prompt_minds_api_key(
+async def _prompt_or_cancel(
+    label: str,
+    *,
+    default: str = "",
+    password: bool = False,
+    choices: list[str] | None = None,
+) -> str | None:
+    """Prompt for free-text input; return None if the user presses Esc.
+
+    Fully async via prompt_toolkit's prompt_async() — event loop never blocked.
+    Only Esc is bound for cancellation; Ctrl+C propagates as KeyboardInterrupt.
+    If `choices` is given, re-prompts until input matches or user presses Esc.
+    """
+    _esc = False
+    bindings = KeyBindings()
+
+    @bindings.add("escape")
+    def _on_esc(event):
+        nonlocal _esc
+        _esc = True
+        event.app.exit(result="")
+
+    pt_style = PTStyle.from_dict({"bottom-toolbar": "noreverse nounderline bg:default"})
+
+    def _toolbar():
+        return HTML("<style fg='#5f9ea0' italic='true'>Esc to cancel</style>")
+
+    if password:
+        suffix = " (hidden): "
+    else:
+        suffix = f" ({default}): " if default else ": "
+
+    pt_session: PromptSession[str] = PromptSession(
+        mouse_support=False,
+        bottom_toolbar=_toolbar,
+        style=pt_style,
+        key_bindings=bindings,
+        is_password=password,
+    )
+
+    if label.startswith("(anton) "):
+        body = label[len("(anton) "):]
+        message = HTML(f"<ansibrightcyan>(anton)</ansibrightcyan> {body}{suffix}")
+    else:
+        message = HTML(f"{label}{suffix}")
+
+    while True:
+        _esc = False
+        result = await pt_session.prompt_async(message)
+        if _esc:
+            return None
+        val = result.strip() if result else default
+        if choices is None or val in choices:
+            break
+
+    if not val and default:
+        return default
+    return val
+
+
+async def _prompt_minds_api_key(
     console: Console,
     *,
     current_key: str,
     allow_empty_keep: bool,
 ) -> str | None:
-    from rich.prompt import Prompt
-
     prompt = "API key"
     if current_key:
         masked = _mask_secret(current_key)
         if allow_empty_keep:
-            prompt += f" [dim](Enter to keep {masked})[/]"
+            prompt += f" (Enter to keep {masked})"
         else:
-            prompt += f" [dim](current: {masked}; Enter to cancel)[/]"
+            prompt += f" (current: {masked}; Enter to cancel)"
 
-    if current_key:
-        api_key = Prompt.ask(prompt, default="", console=console, password=True).strip()
-    else:
-        api_key = Prompt.ask(prompt, console=console, password=True).strip()
+    api_key = (await _prompt_or_cancel(prompt, default="", password=True) or "").strip()
     if api_key:
         return api_key
     if current_key and allow_empty_keep:
@@ -1970,8 +2009,6 @@ async def _handle_data_connections(
     session: ChatSession,
 ) -> ChatSession:
     """View and manage stored keys and connections across global and project vaults."""
-    from rich.prompt import Prompt
-
     from anton.workspace import Workspace as _Workspace
 
     global_ws = _Workspace(Path.home())
@@ -2055,21 +2092,17 @@ async def _handle_data_connections(
         console.print("  [bold]q[/]  Back")
         console.print()
 
-        action = Prompt.ask(
-            "Select", choices=["1", "2", "3", "q"], default="q", console=console
-        )
-
-        if action == "q":
+        action = await _prompt_or_cancel("(anton) Select", choices=["1", "2", "3", "q"], default="q")
+        if action is None or action == "q":
             console.print()
             return session
 
         if action == "1":
             # --- Edit ---
             console.print()
-            pick = Prompt.ask(
-                f"Key number to edit (1-{len(flat)})",
-                console=console,
-            )
+            pick = await _prompt_or_cancel(f"(anton) Key number to edit (1-{len(flat)})")
+            if pick is None:
+                continue
             try:
                 pick_idx = int(pick) - 1
                 if not 0 <= pick_idx < len(flat):
@@ -2081,13 +2114,12 @@ async def _handle_data_connections(
 
             key, old_val, src, lbl = flat[pick_idx]
             use_password = _is_secret_key(key)
-            new_val = Prompt.ask(
-                f"New value for {key}",
+            new_val = (await _prompt_or_cancel(
+                f"(anton) New value for {key}",
                 default="" if use_password else old_val,
-                console=console,
                 password=use_password,
-            ).strip()
-            if not new_val:
+            ) or "").strip()
+            if new_val is None or not new_val:
                 console.print("[anton.muted]Value unchanged.[/]")
                 console.print()
                 continue
@@ -2102,10 +2134,9 @@ async def _handle_data_connections(
         elif action == "2":
             # --- Remove ---
             console.print()
-            pick = Prompt.ask(
-                f"Key number to remove (1-{len(flat)})",
-                console=console,
-            )
+            pick = await _prompt_or_cancel(f"(anton) Key number to remove (1-{len(flat)})")
+            if pick is None:
+                continue
             try:
                 pick_idx = int(pick) - 1
                 if not 0 <= pick_idx < len(flat):
@@ -2132,9 +2163,7 @@ async def _handle_data_connections(
         elif action == "3":
             # --- Add ---
             console.print()
-            new_key = Prompt.ask(
-                "Key name (e.g. HUBSPOT_API_KEY)", console=console
-            ).strip()
+            new_key = (await _prompt_or_cancel("(anton) Key name (e.g. HUBSPOT_API_KEY)") or "").strip()
             if not new_key:
                 console.print("[anton.warning]Key name cannot be empty.[/]")
                 console.print()
@@ -2151,22 +2180,22 @@ async def _handle_data_connections(
                     continue
 
             use_password = _is_secret_key(new_key)
-            new_val = Prompt.ask(
-                f"Value for {new_key}",
-                console=console,
+            new_val = (await _prompt_or_cancel(
+                f"(anton) Value for {new_key}",
                 password=use_password,
-            ).strip()
+            ) or "").strip()
             if not new_val:
                 console.print("[anton.warning]Value cannot be empty.[/]")
                 console.print()
                 continue
 
-            scope = Prompt.ask(
-                "Store in",
+            scope = await _prompt_or_cancel(
+                "(anton) Store in",
                 choices=["global", "project"],
                 default="global",
-                console=console,
             )
+            if scope is None:
+                scope = "global"
             target_ws = global_ws if scope == "global" else workspace
             scope_label = (
                 "~/.anton/.env"
@@ -2193,8 +2222,6 @@ async def _handle_connect(
     """Connect to a Minds server: select a Mind, then optionally a datasource."""
     import urllib.error
 
-    from rich.prompt import Prompt
-
     from anton.workspace import Workspace as _Workspace
 
     global_ws = _Workspace(Path.home())
@@ -2203,11 +2230,13 @@ async def _handle_connect(
 
     # --- Prompt for URL and API key (use saved values as defaults) ---
     saved_url = _normalize_minds_url(settings.minds_url)
-    minds_url = Prompt.ask("Minds server URL", default=saved_url, console=console)
+    minds_url = await _prompt_or_cancel("(anton) Minds server URL", default=saved_url)
+    if minds_url is None:
+        return session
     minds_url = _normalize_minds_url(minds_url)
 
     saved_key = settings.minds_api_key or ""
-    api_key = _prompt_minds_api_key(
+    api_key = await _prompt_minds_api_key(
         console,
         current_key=saved_key,
         allow_empty_keep=True,
@@ -2243,18 +2272,13 @@ async def _handle_connect(
         console.print("    [bold]q[/]  Back")
         console.print()
 
-        action = Prompt.ask(
-            "Select",
-            choices=["1", "2", "q"],
-            default="q",
-            console=console,
-        )
-        if action == "q":
+        action = await _prompt_or_cancel("(anton) Select", choices=["1", "2", "q"], default="q")
+        if action is None or action == "q":
             console.print("[anton.muted]Aborted.[/]")
             console.print()
             return session
         if action == "1":
-            new_key = _prompt_minds_api_key(
+            new_key = await _prompt_minds_api_key(
                 console,
                 current_key=api_key,
                 allow_empty_keep=False,
@@ -2289,7 +2313,9 @@ async def _handle_connect(
     console.print()
 
     choices = [str(i) for i in range(1, len(minds) + 1)]
-    pick = Prompt.ask("Select mind", choices=choices, console=console)
+    pick = await _prompt_or_cancel("(anton) Select mind", choices=choices)
+    if pick is None:
+        return session
     selected_mind = minds[int(pick) - 1]
     mind_name = selected_mind.get("name", "")
 
@@ -2307,7 +2333,9 @@ async def _handle_connect(
             console.print(f"    [bold]{i}[/]  {ref_name}")
         console.print()
         ds_choices = [str(i) for i in range(1, len(mind_datasources) + 1)]
-        ds_pick = Prompt.ask("Select datasource", choices=ds_choices, console=console)
+        ds_pick = await _prompt_or_cancel("(anton) Select datasource", choices=ds_choices)
+        if ds_pick is None:
+            return session
         picked_ds = mind_datasources[int(ds_pick) - 1]
         ds_name = picked_ds if isinstance(picked_ds, str) else picked_ds.get("name", "")
     elif len(mind_datasources) == 1:
@@ -2376,8 +2404,8 @@ async def _handle_connect(
             "ANTHROPIC_API_KEY"
         )
         if not has_anthropic:
-            anthropic_key = Prompt.ask("Anthropic API key (for LLM)", console=console)
-            if anthropic_key.strip():
+            anthropic_key = (await _prompt_or_cancel("(anton) Anthropic API key (for LLM)") or "").strip()
+            if anthropic_key:
                 anthropic_key = anthropic_key.strip()
                 settings.anthropic_api_key = anthropic_key
                 settings.planning_provider = "anthropic"
@@ -2617,26 +2645,23 @@ async def _handle_add_custom_datasource(
     """Ask for the tool name, use the LLM to identify required fields, then collect credentials."""
 
     console.print()
-    preamble = "[anton.cyan](anton)[/] "
     if name:
         tool_name = name
         name_context = f"'{name}' isn't in my built-in list.\n        "
     else:
-        tool_name = Prompt.ask(
-            f"{preamble}What is the name of the tool or service?",
-            console=console,
+        tool_name = await _prompt_or_cancel(
+            "(anton) What is the name of the tool or service?",
         )
-        if not tool_name.strip():
+        if not tool_name or not tool_name.strip():
             return None
         tool_name = tool_name.strip()
         name_context = ""
 
-    user_answer = Prompt.ask(
-        f"{preamble}{name_context}How do you authenticate with it? "
+    user_answer = await _prompt_or_cancel(
+        f"(anton) {name_context}How do you authenticate with it? "
         "Describe what credentials you have (don't paste actual values)",
-        console=console,
     )
-    if not user_answer.strip():
+    if not user_answer or not user_answer.strip():
         return None
 
     console.print()
@@ -2722,12 +2747,9 @@ async def _handle_add_custom_datasource(
             continue
         if str(raw.get("value", "")).strip():
             continue
-        value = Prompt.ask(
-            f"[anton.cyan](anton)[/] {f.name}",
-            password=True,
-            console=console,
-            default="",
-        )
+        value = await _prompt_or_cancel(f"(anton) {f.name}", password=True)
+        if value is None:
+            return None
         if value:
             credentials[f.name] = value
 
@@ -2739,11 +2761,9 @@ async def _handle_add_custom_datasource(
             continue
         if f.name in credentials:
             continue
-        value = Prompt.ask(
-            f"[anton.cyan](anton)[/] {f.name}",
-            console=console,
-            default="",
-        )
+        value = await _prompt_or_cancel(f"(anton) {f.name}")
+        if value is None:
+            return None
         if value:
             credentials[f.name] = value
 
@@ -2751,11 +2771,9 @@ async def _handle_add_custom_datasource(
     for f, raw in zip(fields, raw_fields):
         if f.secret or f.required or f.name in credentials:
             continue
-        value = Prompt.ask(
-            f"[anton.cyan](anton)[/] {f.name} (optional — press Enter to skip)",
-            console=console,
-            default="",
-        )
+        value = await _prompt_or_cancel(f"(anton) {f.name} (optional — press Enter to skip)")
+        if value is None:
+            return None
         if value:
             credentials[f.name] = value
 
@@ -2870,35 +2888,26 @@ async def _run_connection_test(
 
         if cell.error or (cell.stdout.strip() != "ok" and cell.stderr.strip()):
             error_text = cell.error or cell.stderr.strip() or cell.stdout.strip()
-            first_line = next(
-                (ln for ln in error_text.splitlines() if ln.strip()), error_text
+            last_line = next(
+                (ln for ln in reversed(error_text.splitlines()) if ln.strip()), error_text
             )
             console.print()
             console.print("[anton.warning](anton)[/] ✗ Connection failed.")
             console.print()
-            console.print(f"        Error: {first_line}")
+            console.print(f"        Error: {last_line}")
             console.print()
-            retry = (
-                Prompt.ask(
-                    "[anton.cyan](anton)[/] Would you like to re-enter your credentials? [y/n]",
-                    console=console,
-                    default="n",
-                )
-                .strip()
-                .lower()
+            retry = await _prompt_or_cancel(
+                "(anton) Would you like to re-enter your credentials? (y/n)",
             )
-            if retry != "y":
+            if retry is None or retry.strip().lower() != "y":
                 return False
             console.print()
             for f in retry_fields:
                 if not f.secret:
                     continue
-                value = Prompt.ask(
-                    f"[anton.cyan](anton)[/] {f.name}",
-                    password=True,
-                    console=console,
-                    default="",
-                )
+                value = await _prompt_or_cancel(f"(anton) {f.name}", password=True)
+                if value is None:
+                    return False
                 if value:
                     credentials[f.name] = value
             continue
@@ -2972,100 +2981,48 @@ async def _handle_connect_datasource(
         credentials: dict[str, str] = dict(existing)
         for f in active_fields:
             current = existing.get(f.name, "")
-            prompt_label = f"[anton.cyan](anton)[/] {f.name}"
+            field_label = f"(anton) {f.name}"
             if not f.required:
-                prompt_label += " [anton.muted](optional)[/]"
+                field_label += " (optional)"
 
             if f.secret:
                 masked = "••••••••" if current else ""
-                label = (
-                    f"{prompt_label} [anton.muted][{masked}][/]"
-                    if masked
-                    else prompt_label
-                )
-                value = Prompt.ask(label, password=True, console=console, default="")
+                label = f"{field_label} [{masked}]" if masked else field_label
+                value = await _prompt_or_cancel(label, password=True)
+                if value is None:
+                    return session
                 if value:
                     credentials[f.name] = value
                 # else: keep existing (already in credentials)
             elif current:
-                value = Prompt.ask(
-                    f"{prompt_label} [anton.muted][{current}][/]",
-                    console=console,
+                value = await _prompt_or_cancel(
+                    f"{field_label}",
                     default=current,
                 )
+                if value is None:
+                    return session
                 credentials[f.name] = value if value else current
             elif f.default:
-                value = Prompt.ask(
-                    f"{prompt_label} [anton.muted][{f.default}][/]",
-                    console=console,
+                value = await _prompt_or_cancel(
+                    f"{field_label}",
                     default=f.default,
                 )
+                if value is None:
+                    return session
                 if value:
                     credentials[f.name] = value
             else:
-                value = Prompt.ask(prompt_label, console=console, default="")
+                value = await _prompt_or_cancel(field_label)
+                if value is None:
+                    return session
                 if value:
                     credentials[f.name] = value
 
         if engine_def.test_snippet:
-            while True:
-                console.print()
-                console.print("[anton.cyan](anton)[/] Got it. Testing connection…")
-
-                # Temporarily save credentials so inject_env(flat=True) can load them,
-                # then restore all namespaced env vars in the finally block.
-                vault.save(edit_engine, edit_name, credentials)
-                vault.clear_ds_env()
-                vault.inject_env(edit_engine, edit_name, flat=True)
-                _register_secret_vars(engine_def)  # flat names for scrubbing during test
-                try:
-                    pad = await scratchpads.get_or_create("__datasource_test__")
-                    await pad.reset()
-                    if engine_def.pip:
-                        await pad.install_packages([engine_def.pip])
-                    cell = await pad.execute(engine_def.test_snippet)
-                finally:
-                    _restore_namespaced_env(vault)
-
-                if cell.error or (cell.stdout.strip() != "ok" and cell.stderr.strip()):
-                    error_text = (
-                        cell.error or cell.stderr.strip() or cell.stdout.strip()
-                    )
-                    first_line = next(
-                        (ln for ln in error_text.splitlines() if ln.strip()), error_text
-                    )
-                    console.print()
-                    console.print("[anton.warning](anton)[/] ✗ Connection failed.")
-                    console.print()
-                    console.print(f"        Error: {first_line}")
-                    console.print()
-                    retry = (
-                        Prompt.ask(
-                            "[anton.cyan](anton)[/] Would you like to re-enter your credentials? [y/n]",
-                            console=console,
-                            default="n",
-                        )
-                        .strip()
-                        .lower()
-                    )
-                    if retry != "y":
-                        return session
-                    console.print()
-                    for f in active_fields:
-                        if not f.secret:
-                            continue
-                        value = Prompt.ask(
-                            f"[anton.cyan](anton)[/] {f.name}",
-                            password=True,
-                            console=console,
-                            default="",
-                        )
-                        if value:
-                            credentials[f.name] = value
-                    continue
-
-                console.print("[anton.success]        ✓ Connected successfully![/]")
-                break
+            if not await _run_connection_test(
+                console, scratchpads, vault, engine_def, credentials, active_fields
+            ):
+                return session
 
         vault.save(edit_engine, edit_name, credentials)
         _restore_namespaced_env(vault)
@@ -3092,25 +3049,84 @@ async def _handle_connect_datasource(
 
     console.print()
     all_engines = registry.all_engines()
-    if prefill:
-        answer = prefill
-    else:
+    popular_engines = [e for e in all_engines if e.popular and not e.custom]
+    other_engines = [e for e in all_engines if not e.popular and not e.custom]
+    custom_engines = [e for e in all_engines if e.custom]
+    display_engines = popular_engines + other_engines + custom_engines
+
+    def _print_sections() -> None:
         console.print(
             "[anton.cyan](anton)[/] Choose a data source:\n"
         )
         console.print("       [bold]  Primary")
-        console.print("         [bold]  0.[/bold] Custom datasource (connect anything via API, SQL, or MCP)\n")
-        console.print("       [bold]  Predefined")
-        for i, e in enumerate(all_engines, 1):
-            console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
-        console.print()
-        answer = Prompt.ask(
-            "[anton.cyan](anton)[/] Enter a number or type a name",
-            console=console,
+        console.print(
+            "         [bold]  0.[/bold] Custom datasource"
+            " (connect anything via API, SQL, or MCP)\n"
         )
+        if popular_engines:
+            console.print("       [bold]  Most popular")
+            for i, e in enumerate(popular_engines, 1):
+                console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
+            console.print()
+        if other_engines:
+            start = len(popular_engines) + 1
+            console.print("       [bold]  Other connectors")
+            for i, e in enumerate(other_engines[:3], start):
+                console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
+            if len(other_engines) > 3:
+                console.print(
+                    f"          [anton.muted]   … and"
+                    f" {len(other_engines) - 3} more"
+                    f" (type 'all' to see all)[/]"
+                )
+            console.print()
+        if custom_engines:
+            start = len(popular_engines) + len(other_engines) + 1
+            console.print("       [bold]  Custom")
+            for i, e in enumerate(custom_engines, start):
+                console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}")
+            console.print()
+
+    def _print_all() -> None:
+        console.print(
+            "[anton.cyan](anton)[/] All data sources (★ = popular):\n"
+        )
+        console.print("       [bold]  Primary")
+        console.print(
+            "         [bold]  0.[/bold] Custom datasource"
+            " (connect anything via API, SQL, or MCP)\n"
+        )
+        for i, e in enumerate(display_engines, 1):
+            star = " ★" if e.popular else ""
+            console.print(f"          [bold]{i:>2}.[/bold] {e.display_name}{star}")
+        console.print()
+
+    if prefill:
+        answer = prefill
+    else:
+        _print_sections()
+        console.print(
+            "       [anton.muted]Type 'all' to see every datasource.[/]"
+        )
+        console.print()
+        answer = await _prompt_or_cancel(
+            "(anton) Enter a number or type a name",
+        )
+        if answer is None:
+            return session
+        if answer.strip().lower() == "all":
+            console.print()
+            _print_all()
+            answer = await _prompt_or_cancel(
+                "(anton) Enter a number or type a name",
+            )
+            if answer is None:
+                return session
 
     stripped_answer = answer.strip()
-    known_slugs = {f"{c['engine']}-{c['name']}": c for c in vault.list_connections()}
+    known_slugs = {
+        f"{c['engine']}-{c['name']}": c for c in vault.list_connections()
+    }
     if stripped_answer in known_slugs:
         conn = known_slugs[stripped_answer]
         _restore_namespaced_env(vault)
@@ -3144,12 +3160,12 @@ async def _handle_connect_datasource(
         pick_num = int(stripped_answer)
         if pick_num == 0:
             custom_source = True
-        elif 1 <= pick_num <= len(all_engines):
-            engine_def = all_engines[pick_num - 1]
+        elif 1 <= pick_num <= len(display_engines):
+            engine_def = display_engines[pick_num - 1]
         else:
             console.print(
                 f"[anton.warning](anton)[/] '{stripped_answer}' is out of range. "
-                f"Please enter 0–{len(all_engines)}.[/]"
+                f"Please enter 0–{len(display_engines)}.[/]"
             )
             console.print()
             return session
@@ -3176,10 +3192,10 @@ async def _handle_connect_datasource(
                 for i, e in enumerate(candidates, 1):
                     console.print(f"        {i}. {e.display_name}")
                 console.print()
-                pick = Prompt.ask(
-                    "[anton.cyan](anton)[/] Enter a number",
-                    console=console,
-                ).strip()
+                pick = await _prompt_or_cancel("(anton) Enter a number")
+                if pick is None:
+                    return session
+                pick = (pick or "").strip()
                 try:
                     engine_def = candidates[int(pick) - 1]
                 except (ValueError, IndexError):
@@ -3194,16 +3210,10 @@ async def _handle_connect_datasource(
                 console.print(
                     f'[anton.cyan](anton)[/] Did you mean [bold]"{suggestion.display_name}"[/bold]?'
                 )
-                confirm = (
-                    Prompt.ask(
-                        "[anton.cyan](anton)[/] [y/n]",
-                        console=console,
-                        default="n",
-                    )
-                    .strip()
-                    .lower()
+                confirm = await _prompt_or_cancel(
+                    "(anton) Use this datasource? (y/n)",
                 )
-                if confirm == "y":
+                if confirm is not None and confirm.strip().lower() == "y":
                     engine_def = suggestion
                     break
 
@@ -3259,10 +3269,10 @@ async def _handle_connect_datasource(
         for i, am in enumerate(engine_def.auth_methods, 1):
             console.print(f"        {i}. {am.display}")
         console.print()
-        choice_str = Prompt.ask(
-            "[anton.cyan](anton)[/] Enter a number",
-            console=console,
-        ).strip()
+        choice_str = await _prompt_or_cancel("(anton) Enter a number")
+        if choice_str is None:
+            return session
+        choice_str = (choice_str or "").strip()
         try:
             choice_idx = int(choice_str) - 1
             chosen_method = engine_def.auth_methods[choice_idx]
@@ -3299,14 +3309,12 @@ async def _handle_connect_datasource(
 
     console.print()
 
-    mode_answer = (
-        Prompt.ask(
-            "[anton.cyan](anton)[/] Do you have these available? [y/n/<list params>]",
-            console=console,
-        )
-        .strip()
-        .lower()
+    mode_answer = await _prompt_or_cancel(
+        "(anton) Do you have these available? (y/n/<list params>)",
     )
+    if mode_answer is None:
+        return session
+    mode_answer = mode_answer.strip().lower()
 
     if mode_answer == "n":
         console.print()
@@ -3336,21 +3344,14 @@ async def _handle_connect_datasource(
     credentials: dict[str, str] = {}
 
     for f in fields_to_collect:
-        prompt_label = f"[anton.cyan](anton)[/] {f.name}"
-        if not f.required or partial:
-            prompt_label += " [anton.muted](optional, press enter to skip)[/]"
-
         if f.secret:
-            value = Prompt.ask(prompt_label, password=True, console=console, default="")
+            value = await _prompt_or_cancel(f"(anton) {f.name}", password=True)
         elif f.default:
-            value = Prompt.ask(
-                f"{prompt_label} [anton.muted][{f.default}][/]",
-                console=console,
-                default=f.default,
-            )
+            value = await _prompt_or_cancel(f"(anton) {f.name}", default=f.default)
         else:
-            value = Prompt.ask(prompt_label, console=console, default="")
-
+            value = await _prompt_or_cancel(f"(anton) {f.name}")
+        if value is None:
+            return session
         if value:
             credentials[f.name] = value
 
@@ -3385,16 +3386,10 @@ async def _handle_connect_datasource(
             f'[anton.warning](anton)[/] A connection [bold]"{slug}"[/bold] already exists.'
         )
         console.print()
-        choice = (
-            Prompt.ask(
-                "[anton.cyan](anton)[/] [reconnect/cancel]",
-                console=console,
-                default="cancel",
-            )
-            .strip()
-            .lower()
+        choice = await _prompt_or_cancel(
+            f"(anton) {_PROMPT_RECONNECT_CANCEL}",
         )
-        if choice != "reconnect":
+        if choice is None or choice.strip().lower() != "reconnect":
             console.print("[anton.muted]Cancelled.[/]")
             console.print()
             return session
@@ -3503,6 +3498,19 @@ def _handle_remove_data_source(console: Console, slug: str) -> None:
     ):
         vault.delete(engine, name)
         _restore_namespaced_env(vault)
+        engine_def = registry.get(engine)
+        if engine_def is not None and engine_def.custom:
+            remaining = [
+                c for c in vault.list_connections() if c["engine"] == engine
+            ]
+            if not remaining:
+                user_path = DatasourceRegistry._USER_PATH
+                if user_path.is_file():
+                    updated = _remove_engine_block(
+                        user_path.read_text(encoding="utf-8"), engine
+                    )
+                    user_path.write_text(updated, encoding="utf-8")
+                    registry.reload()
         console.print(f"[anton.success]Removed {slug}.[/]")
     else:
         console.print("[anton.muted]Cancelled.[/]")
@@ -3873,10 +3881,6 @@ async def _chat_loop(
 
     toolbar = {"stats": "", "status": ""}
     display = StreamDisplay(console, toolbar=toolbar)
-
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.formatted_text import HTML
-    from prompt_toolkit.styles import Style as PTStyle
 
     def _bottom_toolbar():
         stats = toolbar["stats"]
