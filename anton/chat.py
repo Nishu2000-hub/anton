@@ -3291,7 +3291,7 @@ async def _handle_connect_datasource(
     console.print()
 
     mode_answer = await _prompt_or_cancel(
-        "(anton) Do you have these available? (y/n/<list params>)",
+        "(anton) Do you have these available? (y/n/list params)",
     )
     if mode_answer is None:
         return session
