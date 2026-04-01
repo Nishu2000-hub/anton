@@ -4125,25 +4125,25 @@ async def _agent_zero(console: Console, session: "ChatSession", settings) -> str
     from pathlib import Path
     import datetime
 
+    import os as _os
+
+    # Clear screen for a clean start
+    _os.system("cls" if sys.platform == "win32" else "clear")
+
     g = "anton.glow"
 
     console.print()
-    console.print(f"[{g}]All set with the LLM — let's test that everything works![/]")
+    console.print(f"[anton.prompt]anton>[/] LLM is ready! Let's take it for a spin — I'll build you a sample dashboard to make sure everything works. What are you into?")
     console.print()
-    console.print(
-        "  We'll start the engines with a question to solve. That way you can see\n"
-        "  it's all working, and I can show you what I'm capable of."
-    )
-    console.print()
-    console.print(
-        "  Tell me a little about yourself — what kind of work do you do? Are you\n"
-        "  into crypto, stock markets, sports? What do you nerd about, boss?"
-    )
+    console.print("    [bold]1[/]  Stocks & Finance")
+    console.print("    [bold]2[/]  Crypto")
+    console.print("    [bold]3[/]  Sports")
+    console.print("    [bold]4[/]  Surprise me")
     console.print()
 
-    # Phase 1: Ice-breaker input
+    # Phase 1: Pick a category
     answer = await _prompt_or_cancel(
-        "(anton) ",
+        "(anton) Enter a number or tell me what you're into",
         allow_cancel=True,
     )
     if answer is None:
@@ -4153,40 +4153,44 @@ async def _agent_zero(console: Console, session: "ChatSession", settings) -> str
     if not answer:
         return None
 
-    # Classify using LLM
-    try:
-        resp = await session._llm.plan(
-            system="You classify user interests into categories. Reply with ONLY valid JSON.",
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"The user said: {answer!r}\n\n"
-                    "Classify into one of these categories:\n"
-                    '- finance (stocks, trading, investing, portfolio)\n'
-                    '- crypto (bitcoin, ethereum, web3, blockchain)\n'
-                    '- sports (any sport)\n'
-                    '- data (analytics, BI, dashboards, data science)\n'
-                    '- general (anything else)\n\n'
-                    'If sports, also identify which sport if mentioned.\n\n'
-                    'Reply with ONLY JSON like: {"category": "sports", "sport": "basketball"}\n'
-                    'or {"category": "finance", "sport": null}'
-                ),
-            }],
-            max_tokens=64,
-        )
-        import json as _json
-        raw = (resp.content or "").strip()
-        # Extract JSON from possible markdown fences
-        if "```" in raw:
-            raw = raw.split("```")[1].strip()
-            if raw.startswith("json"):
-                raw = raw[4:].strip()
-        classification = _json.loads(raw)
-        category = classification.get("category", "general")
-        sport = classification.get("sport")
-    except Exception:
-        category = "general"
-        sport = None
+    # Quick-map numbered choices; fall back to LLM for free-text
+    _quick_map = {"1": "finance", "2": "crypto", "3": "sports", "4": "general"}
+    category = _quick_map.get(answer)
+    sport = None
+
+    if category is None:
+        # Free-text — classify using LLM
+        try:
+            resp = await session._llm.plan(
+                system="You classify user interests into categories. Reply with ONLY valid JSON.",
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"The user said: {answer!r}\n\n"
+                        "Classify into one of these categories:\n"
+                        '- finance (stocks, trading, investing, portfolio)\n'
+                        '- crypto (bitcoin, ethereum, web3, blockchain)\n'
+                        '- sports (any sport)\n'
+                        '- data (analytics, BI, dashboards, data science)\n'
+                        '- general (anything else)\n\n'
+                        'If sports, also identify which sport if mentioned.\n\n'
+                        'Reply with ONLY JSON like: {"category": "sports", "sport": "basketball"}\n'
+                        'or {"category": "finance", "sport": null}'
+                    ),
+                }],
+                max_tokens=64,
+            )
+            import json as _json
+            raw = (resp.content or "").strip()
+            if "```" in raw:
+                raw = raw.split("```")[1].strip()
+                if raw.startswith("json"):
+                    raw = raw[4:].strip()
+            classification = _json.loads(raw)
+            category = classification.get("category", "general")
+            sport = classification.get("sport")
+        except Exception:
+            category = "general"
 
     # Phase 2: Tailored follow-up
     demo_key = category
@@ -4256,70 +4260,33 @@ async def _agent_zero(console: Console, session: "ChatSession", settings) -> str
         now = datetime.date.today()
         is_march_madness = sport_choice == "basketball" and now <= datetime.date(now.year, 4, 7)
 
-        if sport_choice == "basketball":
-            if is_march_madness:
-                console.print()
-                console.print(
-                    "  [anton.cyan]It's March Madness right now![/] \U0001f3c0 "
-                    "Want me to analyze who's going to win the championship?"
-                )
-            else:
-                console.print()
-                console.print(
-                    "  [anton.cyan]Great pick![/] Want me to pull current NBA standings "
-                    "and build you a full stats dashboard?"
-                )
-            demo_key = "basketball_marchmadness" if is_march_madness else "basketball"
-        elif sport_choice == "football":
-            console.print()
-            console.print(
-                "  [anton.cyan]Great pick![/] Want me to pull current NFL stats "
-                "and build an interactive dashboard with rankings and matchups?"
-            )
-            demo_key = "football"
-        elif sport_choice == "soccer":
-            console.print()
-            console.print(
-                "  [anton.cyan]Great pick![/] Want me to pull current Premier League standings "
-                "and build a full dashboard?"
-            )
-            demo_key = "soccer"
-        elif sport_choice == "baseball":
-            console.print()
-            console.print(
-                "  [anton.cyan]Great pick![/] Want me to pull current MLB standings and stats "
-                "and build you a dashboard?"
-            )
-            demo_key = "baseball"
+        _sport_prompts = {
+            "basketball": ("It's March Madness!" if is_march_madness else "NBA it is!",
+                           "basketball_marchmadness" if is_march_madness else "basketball"),
+            "football": ("NFL!", "football"),
+            "soccer": ("Premier League!", "soccer"),
+            "baseball": ("MLB!", "baseball"),
+        }
+        prompt_text, demo_key = _sport_prompts.get(sport_choice, ("Let's go!", "general"))
+        console.print()
+        console.print(f"  [anton.cyan]{prompt_text}[/] I'll build you a full interactive dashboard.")
 
     elif category == "finance":
         console.print()
-        console.print(
-            "  [anton.cyan]Great taste![/] Want me to analyze a stock portfolio for you? "
-            "I can pull live prices, performance charts, and build a full dashboard."
-        )
+        console.print("  [anton.cyan]Stocks![/] I'll analyze a portfolio and build you a dashboard.")
     elif category == "crypto":
         console.print()
-        console.print(
-            "  [anton.cyan]Love it![/] Want me to compare Bitcoin vs some top assets over "
-            "the last few years? I'll build you an interactive dashboard."
-        )
+        console.print("  [anton.cyan]Crypto![/] I'll compare Bitcoin vs NVIDIA over 5 years — full dashboard.")
     elif category == "data":
         console.print()
-        console.print(
-            "  [anton.cyan]A fellow data person![/] Let me show you what I can do — want me "
-            "to build a sample analytics dashboard from some interesting public data?"
-        )
+        console.print("  [anton.cyan]Data nerd![/] I'll build a top tech companies dashboard for you.")
     else:
         console.print()
-        console.print(
-            "  [anton.cyan]Cool![/] Let me show you what I'm capable of — I'll pull some "
-            "interesting data and build you a full interactive dashboard."
-        )
+        console.print("  [anton.cyan]Got it![/] I'll build you a full interactive dashboard to show what I can do.")
 
     console.print()
     confirm = await _prompt_or_cancel(
-        "(anton) Want me to go ahead? (y/n)",
+        "(anton) Ready? (y/n)",
         choices=["y", "n"],
         default="y",
         allow_cancel=True,
@@ -4334,9 +4301,8 @@ async def _agent_zero(console: Console, session: "ChatSession", settings) -> str
 
     console.print()
     console.print(
-        "  [anton.glow]On it![/] This will take a couple of minutes — I'm fetching live data,\n"
-        "  crunching numbers, and building you a full interactive dashboard.\n"
-        "  Worth the wait, I promise."
+        "  [anton.glow]On it![/] This takes a couple of minutes — I need to fetch live data,\n"
+        "  crunch the numbers, and build the dashboard from scratch. Worth the wait."
     )
     console.print()
 
