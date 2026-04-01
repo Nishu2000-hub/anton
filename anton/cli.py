@@ -11,6 +11,7 @@ from rich.table import Table
 
 from anton import __version__
 from anton.chat import _prompt_or_cancel
+from anton.llm.openai import build_chat_completion_kwargs
 
 
 def _reexec() -> None:
@@ -153,6 +154,72 @@ def _ensure_dependencies(console: Console) -> None:
         raise typer.Exit(1)
 
 
+def _ensure_terms_consent(console: Console, settings) -> None:
+    """Show terms acceptance screen on first run and persist the choice."""
+    import os
+    import webbrowser
+
+    from rich.prompt import Confirm
+    from rich.text import Text
+
+    # Clear screen
+    os.system("cls" if sys.platform == "win32" else "clear")
+
+    # Centered logo and welcome
+    try:
+        width = os.get_terminal_size().columns
+    except OSError:
+        width = 80
+
+    logo = "A N T O N"
+    welcome = "Welcome to MindsDB-Anton"
+    console.print()
+    console.print(Text(logo, style="bold cyan", justify="center"))
+    console.print()
+    console.print(Text(welcome, style="bold", justify="center"))
+    console.print()
+    console.print(
+        "  Thank you for choosing Anton. Before we start, please review\n"
+        "  and accept our Anton policies."
+    )
+    console.print()
+
+    if Confirm.ask("  Would you like to read the policies?", default=True, console=console):
+        webbrowser.open("https://mindsdb.com/terms")
+        webbrowser.open("https://mindsdb.com/privacy-policy")
+        console.print()
+        console.print("  [anton.muted]Policies opened in your browser.[/]")
+        console.print()
+
+    accepted = Confirm.ask(
+        "  Do you accept the Terms and Privacy Policy?",
+        default=True,
+        console=console,
+    )
+
+    if not accepted:
+        console.print()
+        console.print("  [anton.warning]You must accept the policies to use Anton.[/]")
+        raise typer.Exit(0)
+
+    # Persist consent to ~/.anton/.env
+    env_path = Path.home() / ".anton" / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Append if file exists, otherwise create
+    existing = env_path.read_text() if env_path.is_file() else ""
+    if "ANTON_TERMS_CONSENT" not in existing:
+        with env_path.open("a") as f:
+            if existing and not existing.endswith("\n"):
+                f.write("\n")
+            f.write("ANTON_TERMS_CONSENT=true\n")
+
+    settings.terms_consent = True
+
+    # Clear screen so onboarding starts fresh
+    os.system("cls" if sys.platform == "win32" else "clear")
+
+
 app = typer.Typer(
     name="anton",
     help="Anton — a self-evolving autonomous system",
@@ -219,6 +286,9 @@ def main(
     settings = AntonSettings()
     settings.resolve_workspace(folder)
 
+    if not settings.terms_consent:
+        _ensure_terms_consent(console, settings)
+
     from anton.updater import check_and_update
 
     if check_and_update(console, settings):
@@ -227,6 +297,9 @@ def main(
 
     ctx.ensure_object(dict)
     ctx.obj["settings"] = settings
+
+    from anton.analytics import send_event
+    send_event(settings, "anton_started")
 
     if ctx.invoked_subcommand is None:
         from anton.chat import run_chat
@@ -641,6 +714,34 @@ def _validate_with_spinner(console, label: str, fn) -> None:
     console.print(f"  [anton.success]Validated[/] [anton.muted]{label}[/]")
 
 
+def _normalize_probe_text(text: str | None) -> str:
+    """Normalize a tiny probe response for exact-match validation."""
+    if not text:
+        return ""
+    return text.strip().lower().rstrip(".!?")
+
+
+def _validate_openai_probe_response(response) -> None:
+    """Accept a short successful probe, including truncated completions."""
+    if not getattr(response, "choices", None):
+        raise ValueError("OpenAI validation returned no choices.")
+
+    choice = response.choices[0]
+    finish_reason = getattr(choice, "finish_reason", None)
+    message = getattr(choice, "message", None)
+    content = _normalize_probe_text(getattr(message, "content", None))
+
+    if finish_reason == "length":
+        if content:
+            return
+        raise ValueError("OpenAI validation response was truncated before any content was returned.")
+
+    if content == "pong":
+        return
+
+    raise ValueError(f"Unexpected validation response: {content or '<empty>'}")
+
+
 def _setup_anthropic(settings, ws) -> None:
     """Set up Anthropic with a single model for both reasoning and coding."""
     from rich.prompt import Confirm
@@ -701,7 +802,12 @@ def _setup_openai(settings, ws) -> None:
         def _test():
             import openai
             client = openai.OpenAI(api_key=api_key)
-            client.chat.completions.create(model=model, max_tokens=1, messages=[{"role": "user", "content": "ping"}])
+            response = client.chat.completions.create(**build_chat_completion_kwargs(
+                model=model,
+                messages=[{"role": "user", "content": "Reply with exactly: pong"}],
+                max_tokens=16,
+            ))
+            _validate_openai_probe_response(response)
 
         _validate_with_spinner(console, model, _test)
     except Exception as exc:

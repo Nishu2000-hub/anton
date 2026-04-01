@@ -54,6 +54,7 @@ from anton.datasource_registry import (
     DatasourceRegistry,
     _YAML_BLOCK_RE,
 )
+from anton.llm.openai import build_chat_completion_kwargs
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
@@ -1943,13 +1944,11 @@ def _minds_test_llm(base_url: str, api_key: str, verify: bool = True) -> bool:
     import json as _json
 
     url = f"{base_url}/api/v1/chat/completions"
-    payload = _json.dumps(
-        {
-            "model": "_code_",
-            "messages": [{"role": "user", "content": "ping"}],
-            "max_tokens": 1,
-        }
-    ).encode()
+    payload = _json.dumps(build_chat_completion_kwargs(
+        model="_code_",
+        messages=[{"role": "user", "content": "ping"}],
+        max_tokens=1,
+    )).encode()
 
     try:
         minds_request(url, api_key, method="POST", payload=payload, verify=verify)
@@ -3806,7 +3805,10 @@ def _print_slash_help(console: Console) -> None:
     console.print()
 
     console.print("[anton.cyan]Available commands:[/]")
-    
+
+    console.print("\n[bold]LLM Provider[/]")
+    console.print("  [bold]/llm[/]      — Change LLM provider or API key")
+
     console.print("\n[bold]Data Connections[/]")
     console.print("  [bold]/connect[/]   — Connect a database or API to your Local Vault")
     console.print("  [bold]/list[/]      — List all saved connections")
@@ -4071,6 +4073,9 @@ async def _chat_loop(
     console.print(f"[anton.cyan_dim] {'━' * 40}[/]")
     console.print()
 
+    from anton.analytics import send_event
+    _query_count = 0
+
     from anton.chat_ui import StreamDisplay
 
     toolbar = {"stats": "", "status": ""}
@@ -4194,7 +4199,21 @@ async def _chat_loop(
             if message_content is None and stripped.startswith("/"):
                 parts = stripped.split(maxsplit=1)
                 cmd = parts[0].lower()
-                if cmd == "/minds":
+                if cmd == "/llm":
+                    session = await _handle_setup_models(
+                        console,
+                        settings,
+                        workspace,
+                        state,
+                        self_awareness,
+                        cortex,
+                        session,
+                        episodic=episodic,
+                        history_store=history_store,
+                        session_id=current_session_id,
+                    )
+                    continue
+                elif cmd == "/minds":
                     session = await _handle_connect(
                         console,
                         settings,
@@ -4324,6 +4343,12 @@ async def _chat_loop(
                 console.print()
                 continue
 
+            _query_count += 1
+            if _query_count == 1:
+                send_event(settings, "anton_first_query")
+            else:
+                send_event(settings, "anton_query")
+
             display.start()
             t0 = time.monotonic()
             ttft: float | None = None
@@ -4379,13 +4404,8 @@ async def _chat_loop(
                 toolbar["stats"] = "  ".join(parts)
                 toolbar["status"] = ""
                 display.finish()
-                if last_token_status is not None and last_token_status.status is TokenLimitStatus.WARNING:
-                    pct = int(last_token_status.used / last_token_status.limit * 100) if last_token_status.limit else 80
-                    console.print(
-                        f"[anton.warning]Approaching token limit: {last_token_status.used:,} / {last_token_status.limit:,} tokens used ({pct}%). "
-                        "Visit mdb.ai to upgrade your plan or top up your tokens.[/]"
-                    )
-                    console.print()
+                if _query_count == 1:
+                    send_event(settings, "anton_first_answer")
             except anthropic.AuthenticationError:
                 display.abort()
                 console.print()
@@ -4430,6 +4450,26 @@ async def _chat_loop(
                 display.abort()
                 console.print(f"[anton.error]Error: {exc}[/]")
                 console.print()
+                err_msg = str(exc)
+                if "401" in err_msg or "403" in err_msg or "Authentication" in err_msg:
+                    if Confirm.ask(
+                        "  Would you like to set up new LLM credentials?",
+                        default=True,
+                        console=console,
+                    ):
+                        session = await _handle_setup_models(
+                            console,
+                            settings,
+                            workspace,
+                            state,
+                            self_awareness,
+                            cortex,
+                            session,
+                            episodic=episodic,
+                            history_store=history_store,
+                            session_id=current_session_id,
+                        )
+                    console.print()
     except KeyboardInterrupt:
         pass
 
