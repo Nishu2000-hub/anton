@@ -1956,12 +1956,8 @@ def _minds_test_llm(base_url: str, api_key: str, verify: bool = True) -> bool:
     except urllib.error.HTTPError as e:
         if e.code == 429:
             return "rate_limited"
-        if e.code == 500:
-            body = e.read().decode(errors="replace")
-            if "not found" in body.lower():
-                return True
         return False
-    except Exception as e:
+    except Exception:
         return False
 
 
