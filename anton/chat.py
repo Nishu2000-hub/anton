@@ -4173,17 +4173,29 @@ async def _agent_zero(console: Console, session: "ChatSession", settings) -> str
 
     # Typed message with ellipsis animation
     console.print()
-    _startup_msg = "  Fetching live data, crunching numbers, and building the dashboard"
-    console.file.write(_startup_msg)
+    from anton.channel.theme import get_palette as _gp3
+    _c = _gp3().cyan
+    _r, _g, _b = int(_c[1:3], 16), int(_c[3:5], 16), int(_c[5:7], 16)
+    _ac = f"\033[1;38;2;{_r};{_g};{_b}m"
+    _ar = "\033[0m"
+
+    _prefix = f"{_ac}anton>{_ar} "
+    _typed_msg = "Perfect! Fetching live data, crunching numbers, and building the dashboard"
+    console.file.write(_prefix)
     console.file.flush()
+    for ch in _typed_msg:
+        console.file.write(ch)
+        console.file.flush()
+        _time.sleep(0.02)
 
     # Ellipsis animation for ~10 seconds
+    _full_line = f"{_prefix}{_typed_msg}"
     for _ in range(10):
         for dots in [".", "..", "...", ".. ", ".  ", "   "]:
-            console.file.write(f"\r{_startup_msg}{dots}")
+            console.file.write(f"\r{_full_line}{dots}")
             console.file.flush()
             await asyncio.sleep(0.17)
-    console.file.write(f"\r{_startup_msg}   \n")
+    console.file.write(f"\r{_full_line}   \n")
     console.file.flush()
     console.print()
 
@@ -4294,10 +4306,7 @@ async def _agent_zero(console: Console, session: "ChatSession", settings) -> str
     _ansi_reset = "\033[0m"
 
     for li, line in enumerate(_lines):
-        if li == 0:
-            console.file.write(f"{_ansi_cyan}anton>{_ansi_reset} ")
-        else:
-            console.file.write("       ")
+        console.file.write("  ")
         for ch in line:
             console.file.write(ch)
             console.file.flush()
