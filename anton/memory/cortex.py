@@ -412,8 +412,6 @@ Do NOT add, modify, or summarize rules — return them verbatim.
 
         hc._encode_with_lock(path, new_content, mode="write")
 
-    # --- Profile Extraction ---
-
     async def maybe_update_identity(self, user_message: str) -> None:
         """Check if conversation reveals identity facts worth profiling.
 

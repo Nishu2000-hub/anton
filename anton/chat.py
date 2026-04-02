@@ -1439,7 +1439,6 @@ def _handle_memory(
     console.print("[anton.cyan]Memory Status[/]")
     console.print()
 
-    # --- Current mode ---
     mode_labels = {
         "autopilot": "Autopilot — Anton decides what to remember",
         "copilot": "Co-pilot — save obvious, confirm ambiguous",
@@ -1454,7 +1453,6 @@ def _handle_memory(
         console.print()
         return
 
-    # --- Helper to display a hippocampus scope ---
     def _show_scope(label: str, hc) -> int:
         identity = hc.recall_identity()
         rules = hc.recall_rules()
@@ -1500,10 +1498,8 @@ def _handle_memory(
         console.print()
         return rule_count + lesson_count
 
-    # --- Global scope ---
     global_total = _show_scope("Global Memory", cortex.global_hc)
 
-    # --- Project scope ---
     project_total = _show_scope("Project Memory", cortex.project_hc)
 
     total = global_total + project_total
@@ -1512,7 +1508,6 @@ def _handle_memory(
         console.print("  [anton.warning]Compaction needed (>50 entries in a scope)[/]")
     console.print()
 
-    # --- Episodic memory stats ---
     if episodic is not None:
         status = "[bold]ON[/]" if episodic.enabled else "[dim]OFF[/]"
         sessions = episodic.session_count()
