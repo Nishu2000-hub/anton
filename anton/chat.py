@@ -4129,8 +4129,22 @@ async def _agent_zero(console: Console, session: "ChatSession", settings) -> str
     )
     console.print()
 
-    # Read the script and execute it in a real scratchpad cell
+    # Read the script and patch for scratchpad execution.
+    # 1. __file__ doesn't exist inside exec() — set it so os.path.dirname works
+    # 2. Override OUTPUT_PATH to write to .anton/output/ instead of demo_data/
     code = script_path.read_text()
+    output_dir = str(Path(settings.workspace_path) / ".anton" / "output")
+    output_html = str(Path(output_dir) / "nvda_btc_dashboard.html")
+    code = (
+        f"import os as _os; _os.makedirs({output_dir!r}, exist_ok=True)\n"
+        f"__file__ = {str(script_path)!r}\n"
+        + code
+    )
+    # Replace the OUTPUT_PATH line so the dashboard goes to .anton/output/
+    code = code.replace(
+        'OUTPUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nvda_btc_dashboard.html")',
+        f'OUTPUT_PATH = {output_html!r}',
+    )
 
     from anton.scratchpad import Cell
     from rich.live import Live
