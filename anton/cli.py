@@ -720,6 +720,8 @@ def _validate_with_spinner(console, label: str, fn) -> None:
     console.print(f"  [anton.success]Validated[/] [anton.muted]{label}[/]")
 
 
+
+
 def _normalize_probe_text(text: str | None) -> str:
     """Normalize a tiny probe response for exact-match validation."""
     if not text:
@@ -769,8 +771,8 @@ def _setup_anthropic(settings, ws) -> None:
             client.messages.create(model=model, max_tokens=1, messages=[{"role": "user", "content": "ping"}])
 
         _validate_with_spinner(console, model, _test)
-    except Exception as exc:
-        console.print(f"  [anton.error]Failed:[/] {exc}")
+    except Exception:
+        console.print("  [anton.error] Failed:[/] Check your API key.")
         retry = Confirm.ask("  Try again?", default=True, console=console)
         if retry:
             _setup_anthropic(settings, ws)
@@ -816,8 +818,8 @@ def _setup_openai(settings, ws) -> None:
             _validate_openai_probe_response(response)
 
         _validate_with_spinner(console, model, _test)
-    except Exception as exc:
-        console.print(f"  [anton.error]Failed:[/] {exc}")
+    except Exception:
+        console.print("  [anton.error] Failed:[/] Check your API key.")
         retry = Confirm.ask("  Try again?", default=True, console=console)
         if retry:
             _setup_openai(settings, ws)
