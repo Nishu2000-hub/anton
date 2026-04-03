@@ -166,6 +166,28 @@ def make_cell():
     return _factory
 
 
+@pytest.fixture()
+def make_pad():
+    """Factory that creates a pre-configured scratchpad AsyncMock."""
+
+    def _factory(cell=None, side_effect=None):
+        pad = AsyncMock()
+        if side_effect is not None:
+            pad.execute = AsyncMock(side_effect=side_effect)
+        else:
+            if cell is None:
+                cell = MagicMock()
+                cell.stdout = "ok"
+                cell.stderr = ""
+                cell.error = None
+            pad.execute = AsyncMock(return_value=cell)
+        pad.reset = AsyncMock()
+        pad.install_packages = AsyncMock(return_value="")
+        return pad
+
+    return _factory
+
+
 @pytest.fixture(autouse=True)
 def clean_ds_state():
     """Clear _DS_SECRET_VARS, _DS_KNOWN_VARS, and all DS_* env vars around each test."""
@@ -587,15 +609,14 @@ class TestHandleConnectDatasource:
 
     @pytest.mark.asyncio
     async def test_successful_connection_saves_and_injects_history(
-        self, registry, vault_dir, make_session, make_cell
+        self, registry, vault_dir, make_session, make_cell, make_pad
     ):
         """Happy path: test passes, credentials saved, history entry added."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=make_cell(stdout="ok"))
+        pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         responses = iter(
@@ -637,20 +658,17 @@ class TestHandleConnectDatasource:
 
     @pytest.mark.asyncio
     async def test_failed_test_offers_retry(
-        self, registry, vault_dir, make_session, make_cell
+        self, registry, vault_dir, make_session, make_cell, make_pad
     ):
         """Connection test failure prompts for retry; success on second attempt saves."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(
-            side_effect=[
-                make_cell(stdout="", stderr="password authentication failed"),
-                make_cell(stdout="ok"),
-            ]
-        )
+        pad = make_pad(side_effect=[
+            make_cell(stdout="", stderr="password authentication failed"),
+            make_cell(stdout="ok"),
+        ])
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         responses = iter(
@@ -687,17 +705,14 @@ class TestHandleConnectDatasource:
 
     @pytest.mark.asyncio
     async def test_failed_test_no_retry_returns_without_saving(
-        self, registry, vault_dir, make_session, make_cell
+        self, registry, vault_dir, make_session, make_cell, make_pad
     ):
         """Declining retry on failed test leaves vault empty."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(
-            return_value=make_cell(stdout="", error="connection refused")
-        )
+        pad = make_pad(make_cell(stdout="", error="connection refused"))
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         responses = iter(
@@ -732,15 +747,14 @@ class TestHandleConnectDatasource:
 
     @pytest.mark.asyncio
     async def test_ds_env_injected_after_successful_connect(
-        self, registry, vault_dir, make_session, make_cell
+        self, registry, vault_dir, make_session, make_cell, make_pad
     ):
         """After a successful connect, namespaced DS_* vars are injected."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=make_cell(stdout="ok"))
+        pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         responses = iter(
@@ -772,15 +786,14 @@ class TestHandleConnectDatasource:
 
     @pytest.mark.asyncio
     async def test_auth_method_choice_selects_fields(
-        self, registry, vault_dir, make_session, make_cell
+        self, registry, vault_dir, make_session, make_cell, make_pad
     ):
         """Selecting an auth method filters to that method's fields only."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=make_cell(stdout="ok"))
+        pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         responses = iter(["HubSpot", "1", "n", "y", "pat-na1-abc123"])
@@ -806,15 +819,14 @@ class TestHandleConnectDatasource:
 
     @pytest.mark.asyncio
     async def test_selective_field_collection(
-        self, registry, vault_dir, make_session, make_cell
+        self, registry, vault_dir, make_session, make_cell, make_pad
     ):
         """Typing 'host,user,password' collects only those three fields."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=make_cell(stdout="ok"))
+        pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         responses = iter(
@@ -894,7 +906,7 @@ class TestCredentialScrubbing:
 
     @pytest.mark.asyncio
     async def test_register_and_scrub_on_connect(
-        self, registry, vault_dir, monkeypatch
+        self, registry, vault_dir, monkeypatch, make_pad
     ):
         """After _handle_connect_datasource, the new secret var is immediately scrubbed."""
         vault = DataVault(vault_dir=vault_dir)
@@ -902,10 +914,7 @@ class TestCredentialScrubbing:
         session._history = []
         session._cortex = None
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(
-            return_value=MagicMock(stdout="ok", stderr="", error=None)
-        )
+        pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         secret_pw = "supersecretpassword999"
@@ -1178,7 +1187,7 @@ class TestHandleListDataSources:
 
 class TestHandleTestDatasource:
     @pytest.mark.asyncio
-    async def test_success_path(self, vault_dir, registry, make_cell):
+    async def test_success_path(self, vault_dir, registry, make_cell, make_pad):
         vault = DataVault(vault_dir=vault_dir)
         vault.save(
             "postgresql",
@@ -1192,8 +1201,7 @@ class TestHandleTestDatasource:
             },
         )
         console = MagicMock()
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=make_cell(stdout="ok"))
+        pad = make_pad()
         scratchpads = AsyncMock()
         scratchpads.get_or_create = AsyncMock(return_value=pad)
 
@@ -1207,7 +1215,7 @@ class TestHandleTestDatasource:
         assert "✓" in printed or "passed" in printed.lower()
 
     @pytest.mark.asyncio
-    async def test_failure_path(self, vault_dir, registry, make_cell):
+    async def test_failure_path(self, vault_dir, registry, make_cell, make_pad):
         vault = DataVault(vault_dir=vault_dir)
         vault.save(
             "postgresql",
@@ -1221,10 +1229,7 @@ class TestHandleTestDatasource:
             },
         )
         console = MagicMock()
-        pad = AsyncMock()
-        pad.execute = AsyncMock(
-            return_value=make_cell(stdout="", stderr="password authentication failed")
-        )
+        pad = make_pad(make_cell(stdout="", stderr="password authentication failed"))
         scratchpads = AsyncMock()
         scratchpads.get_or_create = AsyncMock(return_value=pad)
 
@@ -1270,7 +1275,7 @@ class TestHandleTestDatasource:
 class TestEditDatasourceFlow:
     @pytest.mark.asyncio
     async def test_existing_values_loaded(
-        self, registry, vault_dir, make_session, make_cell
+        self, registry, vault_dir, make_session, make_cell, make_pad
     ):
         """Edit shows existing non-secret values as defaults."""
         vault = DataVault(vault_dir=vault_dir)
@@ -1288,8 +1293,7 @@ class TestEditDatasourceFlow:
 
         session = make_session()
         console = MagicMock()
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=make_cell(stdout="ok"))
+        pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         prompt_values = iter(
@@ -1325,7 +1329,7 @@ class TestEditDatasourceFlow:
 
     @pytest.mark.asyncio
     async def test_enter_preserves_secret_value(
-        self, registry, vault_dir, make_session, make_cell
+        self, registry, vault_dir, make_session, make_cell, make_pad
     ):
         """Pressing Enter on a secret field keeps the existing value."""
         vault = DataVault(vault_dir=vault_dir)
@@ -1344,8 +1348,7 @@ class TestEditDatasourceFlow:
 
         session = make_session()
         console = MagicMock()
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=make_cell(stdout="ok"))
+        pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         prompt_values = iter(
@@ -1461,7 +1464,7 @@ class TestRemoveDatasourceFlow:
 class TestEnvActivationCollisionFree:
     @pytest.mark.asyncio
     async def test_connect_clears_previous_ds_vars(
-        self, registry, vault_dir, make_session, make_cell, monkeypatch
+        self, registry, vault_dir, make_session, make_cell, monkeypatch, make_pad
     ):
         """After a successful new connect, stale DS_* vars are cleared."""
         monkeypatch.setenv("DS_ACCESS_TOKEN", "old-token")
@@ -1469,8 +1472,7 @@ class TestEnvActivationCollisionFree:
         session = make_session()
         console = MagicMock()
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=make_cell(stdout="ok"))
+        pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         responses = iter(
@@ -1705,7 +1707,7 @@ class TestTemporaryFlatExecution:
 
     @pytest.mark.asyncio
     async def test_test_datasource_injects_flat_then_restores_namespaced(
-        self, vault_dir, registry
+        self, vault_dir, registry, make_pad
     ):
         """_handle_test_datasource uses flat vars during snippet, then restores namespaced."""
         vault = DataVault(vault_dir=vault_dir)
@@ -1733,10 +1735,8 @@ class TestTemporaryFlatExecution:
             )
             return MagicMock(stdout="ok", stderr="", error=None)
 
-        pad = AsyncMock()
+        pad = make_pad()
         pad.execute = capture_execute
-        pad.reset = AsyncMock()
-        pad.install_packages = AsyncMock()
 
         scratchpads = AsyncMock()
         scratchpads.get_or_create = AsyncMock(return_value=pad)
@@ -2072,15 +2072,14 @@ class TestCustomDatasourceConnectFlow:
 
     @pytest.mark.asyncio
     async def test_custom_with_test_snippet_success(
-        self, vault_dir, make_session, make_cell, tmp_path
+        self, vault_dir, make_session, make_cell, tmp_path, make_pad
     ):
         """Custom datasource with test_snippet: test passes → connection saved."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=make_cell(stdout="ok"))
+        pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
         session._llm = self._make_llm(
             self._make_llm_response(
@@ -2129,17 +2128,14 @@ class TestCustomDatasourceConnectFlow:
 
     @pytest.mark.asyncio
     async def test_custom_with_test_snippet_fail_no_retry(
-        self, vault_dir, make_session, make_cell, tmp_path
+        self, vault_dir, make_session, make_cell, tmp_path, make_pad
     ):
         """Custom datasource: test fails and user declines retry → not saved."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(
-            return_value=make_cell(stdout="", stderr="connection refused")
-        )
+        pad = make_pad(make_cell(stdout="", stderr="connection refused"))
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
         session._llm = self._make_llm(
             self._make_llm_response(
@@ -2182,20 +2178,17 @@ class TestCustomDatasourceConnectFlow:
 
     @pytest.mark.asyncio
     async def test_custom_with_test_snippet_fail_retry_success(
-        self, vault_dir, make_session, make_cell, tmp_path
+        self, vault_dir, make_session, make_cell, tmp_path, make_pad
     ):
         """Custom datasource: test fails, user retries with corrected creds → saved."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(
-            side_effect=[
-                make_cell(stdout="", stderr="invalid key"),
-                make_cell(stdout="ok"),
-            ]
-        )
+        pad = make_pad(side_effect=[
+            make_cell(stdout="", stderr="invalid key"),
+            make_cell(stdout="ok"),
+        ])
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
         session._llm = self._make_llm(
             self._make_llm_response(
@@ -2250,14 +2243,14 @@ class TestCustomDatasourceConnectFlow:
 
     @pytest.mark.asyncio
     async def test_custom_without_test_snippet_saves(
-        self, vault_dir, make_session, make_cell, tmp_path
+        self, vault_dir, make_session, make_cell, tmp_path, make_pad
     ):
         """Custom datasource without test_snippet: saves directly, no scratchpad call."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        pad = AsyncMock()
+        pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
         session._llm = self._make_llm(
             self._make_llm_response(
@@ -2308,17 +2301,10 @@ class TestEditDatasourceWithTestSnippet:
         "schema": "",
     }
 
-    def _setup_pad(self, session, cell):
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=cell)
-        pad.reset = AsyncMock()
-        pad.install_packages = AsyncMock()
-        session._scratchpads.get_or_create = AsyncMock(return_value=pad)
-        return pad
 
     @pytest.mark.asyncio
     async def test_edit_failed_test_does_not_corrupt_vault(
-        self, vault_dir, registry, make_session, make_cell
+        self, vault_dir, registry, make_session, make_cell, make_pad
     ):
         """edit with bad creds + test fails + user declines retry → original creds intact."""
         session = make_session()
@@ -2326,7 +2312,8 @@ class TestEditDatasourceWithTestSnippet:
         vault = DataVault(vault_dir=vault_dir)
         vault.save("postgresql", "prod_db", self.OLD_CREDS)
 
-        self._setup_pad(session, make_cell(stdout="", stderr="connection refused"))
+        pad = make_pad(make_cell(stdout="", stderr="connection refused"))
+        session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         # Keep all non-secret fields; enter bad password; decline retry.
         responses = iter(
@@ -2355,7 +2342,7 @@ class TestEditDatasourceWithTestSnippet:
 
     @pytest.mark.asyncio
     async def test_edit_successful_test_persists_new_credentials(
-        self, vault_dir, registry, make_session, make_cell
+        self, vault_dir, registry, make_session, make_cell, make_pad
     ):
         """edit with valid creds + test passes → new creds saved to vault."""
         session = make_session()
@@ -2363,7 +2350,8 @@ class TestEditDatasourceWithTestSnippet:
         vault = DataVault(vault_dir=vault_dir)
         vault.save("postgresql", "prod_db", self.OLD_CREDS)
 
-        self._setup_pad(session, make_cell(stdout="ok"))
+        pad = make_pad()
+        session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         prompt_responses = iter(
             [
@@ -2398,7 +2386,7 @@ class TestEditDatasourceWithTestSnippet:
 
     @pytest.mark.asyncio
     async def test_connection_test_error_summary_uses_meaningful_line(
-        self, vault_dir, registry
+        self, vault_dir, registry, make_cell, make_pad
     ):
         """Error display shows last non-empty line (exception msg), not traceback header."""
         console = MagicMock()
@@ -2415,11 +2403,7 @@ class TestEditDatasourceWithTestSnippet:
         cell.stderr = traceback_text
         cell.error = None
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=cell)
-        pad.reset = AsyncMock()
-        pad.install_packages = AsyncMock()
-
+        pad = make_pad(cell)
         scratchpads = AsyncMock()
         scratchpads.get_or_create = AsyncMock(return_value=pad)
 
@@ -2477,15 +2461,14 @@ class TestPromptCopyConsistency:
 
     @pytest.mark.asyncio
     async def test_esc_on_retry_does_not_save(
-        self, registry, vault_dir, make_session, make_cell
+        self, registry, vault_dir, make_session, make_cell, make_pad
     ):
         """Pressing Esc at the retry prompt makes _run_connection_test return False."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        pad = AsyncMock()
-        pad.execute = AsyncMock(return_value=make_cell(stdout="", error="bad creds"))
+        pad = make_pad(make_cell(stdout="", error="bad creds"))
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
         with (
