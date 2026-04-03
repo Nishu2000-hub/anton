@@ -3029,7 +3029,11 @@ async def _run_connection_test(
             pad = await scratchpads.get_or_create("__datasource_test__")
             await pad.reset()
             if engine_def.pip:
-                pip_pkgs = engine_def.pip if isinstance(engine_def.pip, list) else [engine_def.pip]
+                if isinstance(engine_def.pip, list):
+                    pip_pkgs = engine_def.pip
+                else:
+                    # Split space-separated package strings into individual packages
+                    pip_pkgs = engine_def.pip.split()
                 install_result = await pad.install_packages(pip_pkgs)
                 if "failed" in (install_result or "").lower():
                     console.print()
