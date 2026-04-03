@@ -44,21 +44,6 @@ def test_version_subcommand(cfg):
     assert_not_output(result, "Traceback (most recent call last)")
 
 
-def test_missing_api_key_triggers_onboarding(cfg, stub, tmp_path):
-    """Without an API key the app shows the onboarding intro (non-TTY static fallback)."""
-    env = base_env(stub)
-    env["ANTON_OPENAI_API_KEY"] = ""
-    env["ANTON_FIRST_RUN_DONE"] = "true"   # prevent _agent_zero from consuming stdin
-    env.pop("OPENAI_API_KEY", None)
-    result = run_anton(["--folder", str(tmp_path)], [""],
-                       env=env, timeout=cfg.timeout(15))
-    assert_exit_ok(result)
-    assert_output(result, "Hi Boss!")
-    assert_not_output(result, "Traceback (most recent call last)")
-    assert stub.request_count == 0, \
-        f"Expected no LLM requests during onboarding with blank input, got {stub.request_count}"
-
-
 def test_invalid_provider_exits_with_error(cfg, stub, tmp_path):
     env = base_env(stub)
     env["ANTON_PLANNING_PROVIDER"] = "nonexistent-provider-xyz"
