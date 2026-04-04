@@ -486,10 +486,10 @@ async def handle_connect_datasource(session: ChatSession, tc_input: dict) -> str
             await asyncio.sleep(1.5)
         console.print()
         return (
-            f"The user cancelled or skipped the '{engine}' connection setup. "
-            f"Do NOT retry connecting automatically. Ask the user how they'd like to proceed — "
-            f"they may want to try a different approach, provide the data another way, "
-            f"or move on to something else."
+            f"CANCELLED: The user pressed Escape and cancelled the '{engine}' connection. "
+            f"STOP — do NOT call connect_new_datasource again. Do NOT retry. "
+            f"Acknowledge the cancellation briefly and ask the user what they'd like to do instead. "
+            f"Respond with TEXT ONLY — no tool calls."
         )
 
 
