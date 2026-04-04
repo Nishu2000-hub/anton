@@ -468,9 +468,22 @@ async def handle_connect_datasource(session: ChatSession, tc_input: dict) -> str
             f"Continue helping the user with their original request using this data source."
         )
     else:
-        # User cancelled or connection failed
+        # User cancelled or connection failed — show briefly with spinner
+        # so user knows the agent is picking back up
+        from rich.live import Live
+        from rich.spinner import Spinner
+        from rich.text import Text
+        import asyncio
+
         console.print()
-        console.print("[anton.muted]  Connection was cancelled or did not complete.[/]")
+        console.print("[anton.muted]  Connection was cancelled.[/]")
+        with Live(
+            Spinner("dots", text=Text("", style="anton.muted"), style="anton.cyan"),
+            console=console,
+            refresh_per_second=10,
+            transient=True,
+        ):
+            await asyncio.sleep(1.5)
         console.print()
         return (
             f"The user cancelled or skipped the '{engine}' connection setup. "
