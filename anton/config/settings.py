@@ -73,6 +73,17 @@ class AntonSettings(BaseSettings):
             return True
         return v
 
+    def model_post_init(self, __context) -> None:
+        """Derive openai vars from minds credentials when appropriate."""
+        if (
+            self.minds_api_key
+            and not self.openai_api_key
+            and (self.planning_provider == "openai-compatible" or self.coding_provider == "openai-compatible")
+        ):
+            self.openai_api_key = self.minds_api_key
+            if not self.openai_base_url:
+                self.openai_base_url = f"{self.minds_url.rstrip('/')}/api/v1"
+
     _workspace: Path = PrivateAttr(default=None)
 
     @property

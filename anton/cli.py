@@ -664,16 +664,14 @@ def _setup_minds(settings, ws, *, default_url: str | None = "https://mdb.ai") ->
 
     if llm_ok:
         console.print("  [anton.success]Connected[/]")
-        base_url = f"{minds_url}/api/v1"
-        settings.openai_api_key = api_key
-        settings.openai_base_url = base_url
         settings.planning_provider = "openai-compatible"
         settings.coding_provider = "openai-compatible"
         settings.planning_model = "_reason_"
         settings.coding_model = "_code_"
         settings.minds_ssl_verify = ssl_verify
-        ws.set_secret("ANTON_OPENAI_API_KEY", api_key)
-        ws.set_secret("ANTON_OPENAI_BASE_URL", base_url)
+        # openai_api_key and openai_base_url are derived at runtime from
+        # minds_api_key and minds_url via model_post_init — no need to persist them.
+        settings.model_post_init(None)
         ws.set_secret("ANTON_PLANNING_PROVIDER", "openai-compatible")
         ws.set_secret("ANTON_CODING_PROVIDER", "openai-compatible")
         ws.set_secret("ANTON_PLANNING_MODEL", "_reason_")
