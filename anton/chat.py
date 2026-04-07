@@ -55,6 +55,7 @@ from anton.commands.setup import (
     handle_setup_models,
 )
 from anton.commands.ui import handle_theme, print_slash_help
+from anton.commands.session import handle_resume
 from anton.commands.datasource import handle_list_data_sources, handle_remove_data_source
 from anton.prompt_utils import (
     MINDS_KEYS,
@@ -1467,98 +1468,6 @@ def _rebuild_session(
         proactive_dashboards=settings.proactive_dashboards,
     )
 
-
-async def _handle_resume(
-    console: Console,
-    settings: AntonSettings,
-    state: dict,
-    self_awareness,
-    cortex,
-    workspace,
-    session: ChatSession,
-    episodic: EpisodicMemory | None = None,
-    history_store: HistoryStore | None = None,
-) -> tuple[ChatSession, str | None]:
-    """Show session picker and resume a previous chat session.
-
-    Returns (new_session, resumed_session_id) or (original_session, None).
-    """
-    from rich.table import Table
-
-    if history_store is None:
-        console.print("[anton.warning]History store not available.[/]")
-        console.print()
-        return session, None
-
-    sessions = history_store.list_sessions(limit=10)
-    if not sessions:
-        console.print()
-        console.print("[anton.warning]No previous sessions to resume.[/]")
-        console.print()
-        return session, None
-
-    console.print()
-    console.print("[anton.cyan]Recent sessions:[/]")
-    console.print()
-
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("#", style="bold", width=3)
-    table.add_column("Date", style="anton.cyan")
-    table.add_column("Turns", justify="right")
-    table.add_column("Preview")
-
-    for i, s in enumerate(sessions, 1):
-        table.add_row(str(i), s["date"], str(s["turns"]), s["preview"])
-
-    console.print(table)
-    console.print()
-
-    choices = [str(i) for i in range(1, len(sessions) + 1)] + ["q"]
-    choice = await prompt_or_cancel("(anton) Select session (or q to cancel)", choices=choices, default="q")
-    if choice is None or choice == "q":
-        console.print()
-        return session, None
-
-    idx = int(choice) - 1
-    selected = sessions[idx]
-    sid = selected["session_id"]
-
-    history = history_store.load(sid)
-    if history is None:
-        console.print("[anton.error]Failed to load session history.[/]")
-        console.print()
-        return session, None
-
-    # Resume episodic memory for this session
-    if episodic is not None and episodic.enabled:
-        episodic.resume_session(sid)
-
-    # Close old scratchpads
-    if session._scratchpads.list_pads():
-        await session._scratchpads.close_all()
-
-    # Build new session with restored history
-    new_session = _rebuild_session(
-        settings=settings,
-        state=state,
-        self_awareness=self_awareness,
-        cortex=cortex,
-        workspace=workspace,
-        console=console,
-        episodic=episodic,
-        history_store=history_store,
-        session_id=sid,
-    )
-    new_session._history = list(history)
-    new_session._turn_count = sum(1 for m in history if m.get("role") == "user")
-
-    console.print()
-    console.print(
-        f"[anton.success]Resumed session from {selected['date']} ({selected['turns']} turns)[/]"
-    )
-    console.print()
-
-    return new_session, sid
 
 async def _handle_connect(
     console: Console,
@@ -3769,7 +3678,7 @@ async def _chat_loop(
 
     # Handle --resume flag at startup
     if resume:
-        session, resumed_id = await _handle_resume(
+        session, resumed_id = await handle_resume(
             console,
             settings,
             state,
@@ -4015,7 +3924,7 @@ async def _chat_loop(
                     )
                     continue
                 elif cmd == "/resume":
-                    session, resumed_id = await _handle_resume(
+                    session, resumed_id = await handle_resume(
                         console,
                         settings,
                         state,
