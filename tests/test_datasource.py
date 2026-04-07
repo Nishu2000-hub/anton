@@ -21,7 +21,7 @@ from anton.commands.datasource import (
     handle_list_data_sources,
     handle_remove_data_source,
 )
-from anton.datasource_utils import (
+from anton.utils.datasources import (
     _DS_KNOWN_VARS,
     _DS_SECRET_VARS,
     build_datasource_context,
@@ -1051,7 +1051,7 @@ class TestActiveDatasourceScoping:
         vault.save("oracle", "1", {"host": "oracle.host"})
         vault.save("hubspot", "2", {"access_token": "pat-xxx"})
 
-        with patch("anton.datasource_utils.DataVault", return_value=vault):
+        with patch("anton.utils.datasources.DataVault", return_value=vault):
             ctx = build_datasource_context()
 
         assert "oracle-1" in ctx
@@ -1063,7 +1063,7 @@ class TestActiveDatasourceScoping:
         vault.save("oracle", "1", {"host": "oracle.host"})
         vault.save("hubspot", "2", {"access_token": "pat-xxx"})
 
-        with patch("anton.datasource_utils.DataVault", return_value=vault):
+        with patch("anton.utils.datasources.DataVault", return_value=vault):
             ctx = build_datasource_context(active_only="hubspot-2")
 
         assert "hubspot-2" in ctx
@@ -1074,7 +1074,7 @@ class TestActiveDatasourceScoping:
         vault = DataVault(vault_dir=vault_dir)
         vault.save("oracle", "1", {"host": "oracle.host"})
 
-        with patch("anton.datasource_utils.DataVault", return_value=vault):
+        with patch("anton.utils.datasources.DataVault", return_value=vault):
             ctx = build_datasource_context(active_only="hubspot-99")
 
         assert "oracle-1" not in ctx
@@ -1085,7 +1085,7 @@ class TestActiveDatasourceScoping:
             "postgres", "prod_db", {"host": "pg.example.com", "password": "s3cr3t"}
         )
 
-        with patch("anton.datasource_utils.DataVault", return_value=vault):
+        with patch("anton.utils.datasources.DataVault", return_value=vault):
             ctx = build_datasource_context()
 
         assert "DS_POSTGRES_PROD_DB__HOST" in ctx
@@ -1096,7 +1096,7 @@ class TestActiveDatasourceScoping:
         vault = DataVault(vault_dir=vault_dir)
         vault.save("postgres", "prod_db", {"host": "pg.example.com"})
 
-        with patch("anton.datasource_utils.DataVault", return_value=vault):
+        with patch("anton.utils.datasources.DataVault", return_value=vault):
             ctx = build_datasource_context()
 
         assert "postgres-prod_db" in ctx
@@ -1108,7 +1108,7 @@ class TestActiveDatasourceScoping:
         vault.save("postgres", "prod_db", {"host": "pg.example.com"})
         vault.save("hubspot", "main", {"access_token": "pat-abc"})
 
-        with patch("anton.datasource_utils.DataVault", return_value=vault):
+        with patch("anton.utils.datasources.DataVault", return_value=vault):
             ctx = build_datasource_context()
 
         assert "postgres-prod_db" in ctx
@@ -1688,7 +1688,7 @@ class TestTemporaryFlatExecution:
         assert os.environ.get("DS_HOST") == "analytics.example.com"
         assert "DS_POSTGRES_ANALYTICS__HOST" not in os.environ
 
-        with patch("anton.datasource_utils.DataVault", return_value=vault):
+        with patch("anton.utils.datasources.DataVault", return_value=vault):
             restore_namespaced_env(vault)
 
         assert "DS_HOST" not in os.environ
@@ -1702,7 +1702,7 @@ class TestTemporaryFlatExecution:
 
         vault.inject_env("postgres", "prod_db", flat=True)
 
-        with patch("anton.datasource_utils.DataVault", return_value=vault):
+        with patch("anton.utils.datasources.DataVault", return_value=vault):
             restore_namespaced_env(vault)
 
         assert "DS_HOST" not in os.environ
@@ -1782,7 +1782,7 @@ class TestStaleDsRegistrationState:
         )
 
         with patch(
-            "anton.datasource_utils.DatasourceRegistry", return_value=registry
+            "anton.utils.datasources.DatasourceRegistry", return_value=registry
         ):
             restore_namespaced_env(vault)
 
@@ -1792,7 +1792,7 @@ class TestStaleDsRegistrationState:
         vault.delete("postgresql", "prod_db")
 
         with patch(
-            "anton.datasource_utils.DatasourceRegistry", return_value=registry
+            "anton.utils.datasources.DatasourceRegistry", return_value=registry
         ):
             restore_namespaced_env(vault)
 
@@ -1815,7 +1815,7 @@ class TestStaleDsRegistrationState:
         )
 
         with patch(
-            "anton.datasource_utils.DatasourceRegistry", return_value=registry
+            "anton.utils.datasources.DatasourceRegistry", return_value=registry
         ):
             restore_namespaced_env(vault)
 
@@ -1837,7 +1837,7 @@ class TestStaleDsRegistrationState:
         )
 
         with patch(
-            "anton.datasource_utils.DatasourceRegistry", return_value=registry
+            "anton.utils.datasources.DatasourceRegistry", return_value=registry
         ):
             restore_namespaced_env(vault)
 
@@ -1861,7 +1861,7 @@ class TestStaleDsRegistrationState:
         )
 
         with patch(
-            "anton.datasource_utils.DatasourceRegistry", return_value=registry
+            "anton.utils.datasources.DatasourceRegistry", return_value=registry
         ):
             restore_namespaced_env(vault)
 
@@ -1869,7 +1869,7 @@ class TestStaleDsRegistrationState:
         known_after_first = len(_DS_KNOWN_VARS)
 
         with patch(
-            "anton.datasource_utils.DatasourceRegistry", return_value=registry
+            "anton.utils.datasources.DatasourceRegistry", return_value=registry
         ):
             restore_namespaced_env(vault)
 
