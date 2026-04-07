@@ -40,6 +40,7 @@ from anton.scratchpad import ScratchpadManager
 from anton.tools import (
     CONNECT_DATASOURCE_TOOL,
     MEMORIZE_TOOL,
+    PUBLISH_TOOL,
     RECALL_TOOL,
     SCRATCHPAD_TOOL,
     dispatch_tool,
@@ -328,6 +329,7 @@ class ChatSession:
         if self._episodic is not None and self._episodic.enabled:
             tools.append(RECALL_TOOL)
         tools.append(CONNECT_DATASOURCE_TOOL)
+        tools.append(PUBLISH_TOOL)
         return tools
 
     async def close(self) -> None:
@@ -892,11 +894,13 @@ class ChatSession:
                                         (cell.stdout or "")[:2000],
                                         description=description,
                                     )
-                        elif tc.name == "connect_new_datasource":
+                        elif tc.name == "connect_new_datasource" or (
+                            tc.name == "publish_or_preview" and tc.input.get("action") == "publish"
+                        ):
                             # Interactive tool — pause spinner AND escape watcher
                             yield StreamTaskProgress(
-                                phase="connect_datasource",
-                                message="Connecting datasource...",
+                                phase="interactive",
+                                message="",
                             )
                             if self._escape_watcher:
                                 self._escape_watcher.pause()
@@ -1935,15 +1939,13 @@ async def _handle_connect(
         console.print(
             "[anton.success]LLM endpoints available — using Minds server as LLM provider.[/]"
         )
-        base_url = f"{minds_url.rstrip('/')}/api/v1"
-        settings.openai_api_key = api_key
-        settings.openai_base_url = base_url
         settings.planning_provider = "openai-compatible"
         settings.coding_provider = "openai-compatible"
         settings.planning_model = "_reason_"
         settings.coding_model = "_code_"
-        global_ws.set_secret("ANTON_OPENAI_API_KEY", api_key)
-        global_ws.set_secret("ANTON_OPENAI_BASE_URL", base_url)
+        # openai_api_key and openai_base_url are derived at runtime from
+        # minds_api_key and minds_url via model_post_init — no need to persist them.
+        settings.model_post_init(None)
         global_ws.set_secret("ANTON_PLANNING_PROVIDER", "openai-compatible")
         global_ws.set_secret("ANTON_CODING_PROVIDER", "openai-compatible")
         global_ws.set_secret("ANTON_PLANNING_MODEL", "_reason_")
@@ -3379,6 +3381,152 @@ def _handle_theme(console: Console, arg: str) -> None:
     console.print()
 
 
+def _extract_html_title(path, re_module) -> str:
+    """Extract <title> content from an HTML file. Returns '' if not found."""
+    try:
+        # Read only the first 4KB — title is always near the top
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            head = f.read(4096)
+        m = re_module.search(r"<title[^>]*>(.*?)</title>", head, re_module.IGNORECASE | re_module.DOTALL)
+        return m.group(1).strip() if m else ""
+    except Exception:
+        return ""
+
+
+async def _handle_publish(
+    console: Console,
+    settings,
+    workspace,
+    file_arg: str = "",
+) -> None:
+    """Handle /publish command — publish an HTML report to the web."""
+    import webbrowser
+    from pathlib import Path
+
+    from anton.publisher import publish
+
+    console.print()
+
+    # 1. Ensure Minds API key is available
+    if not settings.minds_api_key:
+        console.print("  [anton.muted]To publish dashboards you need a free Minds account.[/]")
+        console.print()
+        has_key = await prompt_or_cancel(
+            "  Do you have an mdb.ai API key?",
+            choices=["y", "n"],
+            choices_display="y/n",
+            default="y",
+        )
+        if has_key is None:
+            console.print()
+            return
+        if has_key.lower() == "n":
+            webbrowser.open(
+                "https://mdb.ai/auth/realms/mindsdb/protocol/openid-connect/registrations"
+                "?client_id=public-client&response_type=code&scope=openid"
+                "&redirect_uri=https%3A%2F%2Fmdb.ai"
+            )
+            console.print()
+
+        api_key = await prompt_or_cancel("  API key", password=True)
+        if api_key is None or not api_key.strip():
+            console.print()
+            return
+        api_key = api_key.strip()
+        settings.minds_api_key = api_key
+        if workspace:
+            workspace.set_secret("ANTON_MINDS_API_KEY", api_key)
+        console.print()
+
+    # 2. Find the HTML file to publish
+    import re
+
+    output_dir = Path(settings.workspace_path) / ".anton" / "output"
+
+    if file_arg:
+        target = Path(file_arg)
+        if not target.is_absolute():
+            target = Path(settings.workspace_path) / file_arg
+    else:
+        # List HTML files sorted by modification time (most recent first)
+        html_files = sorted(
+            output_dir.glob("*.html"), key=lambda f: f.stat().st_mtime, reverse=True
+        ) if output_dir.is_dir() else []
+        if not html_files:
+            console.print("  [anton.warning]No HTML files found in .anton/output/[/]")
+            console.print()
+            return
+
+        PAGE_SIZE = 10
+        offset = 0
+
+        while True:
+            page = html_files[offset:offset + PAGE_SIZE]
+            has_more = offset + PAGE_SIZE < len(html_files)
+
+            console.print("  [anton.cyan]Available reports:[/]")
+            console.print()
+            for i, f in enumerate(page, offset + 1):
+                title = _extract_html_title(f, re)
+                label = title or f.name
+                console.print(f"  [bold]{i}[/]  {label}  [anton.muted]{f.name}[/]")
+
+            if has_more:
+                console.print(f"\n  [anton.muted]m  Show more ({len(html_files) - offset - PAGE_SIZE} remaining)[/]")
+
+            console.print()
+            choice = await prompt_or_cancel("  Select", default="1")
+            if choice is None:
+                console.print()
+                return
+
+            if choice.strip().lower() == "m" and has_more:
+                offset += PAGE_SIZE
+                console.print()
+                continue
+
+            try:
+                idx = int(choice) - 1
+                if idx < 0 or idx >= len(html_files):
+                    raise ValueError
+                target = html_files[idx]
+                break
+            except (ValueError, IndexError):
+                console.print("  [anton.warning]Invalid choice.[/]")
+                console.print()
+                return
+
+    if not target.exists():
+        console.print(f"  [anton.warning]File not found: {target}[/]")
+        console.print()
+        return
+
+    # 3. Publish
+    from rich.live import Live
+    from rich.spinner import Spinner
+
+    with Live(Spinner("dots", text="  Publishing...", style="anton.cyan"), console=console, transient=True):
+        try:
+            result = publish(
+                target,
+                api_key=settings.minds_api_key,
+                publish_url=settings.publish_url,
+                ssl_verify=settings.minds_ssl_verify,
+            )
+        except Exception as e:
+            console.print(f"  [anton.error]Publish failed: {e}[/]")
+            console.print()
+            return
+
+    view_url = result.get("view_url", "")
+    console.print(f"  [anton.success]Published![/]")
+    console.print(f"  [link={view_url}]{view_url}[/link]")
+    console.print()
+
+    if view_url:
+        webbrowser.open(view_url)
+
+
 def _print_slash_help(console: Console) -> None:
     """Print available slash commands."""
     console.print()
@@ -3403,6 +3551,7 @@ def _print_slash_help(console: Console) -> None:
     console.print("\n[bold]Chat Tools[/]")
     console.print("  [bold]/paste[/]     — Attach an image from your clipboard")
     console.print("  [bold]/resume[/]    — Continue a previous session")
+    console.print("  [bold]/publish[/]   — Publish an HTML report to the web")
     
     console.print("\n[bold]General[/]")
     console.print("  [bold]/help[/]      — Show this help menu")
@@ -4251,6 +4400,10 @@ async def _chat_loop(
                 elif cmd == "/theme":
                     arg = parts[1].strip() if len(parts) > 1 else ""
                     _handle_theme(console, arg)
+                    continue
+                elif cmd == "/publish":
+                    arg = parts[1].strip() if len(parts) > 1 else ""
+                    await _handle_publish(console, settings, workspace, arg)
                     continue
                 elif cmd == "/help":
                     _print_slash_help(console)
