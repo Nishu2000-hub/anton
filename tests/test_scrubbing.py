@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from anton.chat import (
+from anton.datasource_utils import (
     _DS_KNOWN_VARS,
     _DS_SECRET_VARS,
     _scrub_credentials,

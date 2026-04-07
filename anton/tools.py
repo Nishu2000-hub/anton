@@ -475,7 +475,7 @@ async def handle_connect_datasource(session: ChatSession, tc_input: dict) -> str
         f"[anton.prompt]anton>[/] I can help with that \u2014 let's connect [bold]{engine}[/] to Anton."
     )
 
-    from anton.chat import _handle_connect_datasource
+    from anton.commands.datasource import handle_connect_datasource
     from anton.prompt_utils import prompt_or_cancel
     from anton.data_vault import DataVault
 
@@ -483,7 +483,7 @@ async def handle_connect_datasource(session: ChatSession, tc_input: dict) -> str
     vault = DataVault()
     before = {f"{c['engine']}-{c['name']}" for c in vault.list_connections()}
 
-    await _handle_connect_datasource(
+    await handle_connect_datasource(
         console,
         session._scratchpads,
         session,
