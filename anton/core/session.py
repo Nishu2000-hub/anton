@@ -4,8 +4,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from anton.llm.prompts import CHAT_SYSTEM_PROMPT, build_visualizations_prompt
-from anton.llm.provider import (
+from anton.core.llm.prompts import CHAT_SYSTEM_PROMPT, build_visualizations_prompt
+from anton.core.llm.provider import (
     ContextOverflowError,
     StreamComplete,
     StreamContextCompacted,
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from rich.console import Console
     from anton.context.self_awareness import SelfAwarenessContext
     from anton.chat_ui import EscapeWatcher
-    from anton.llm.client import LLMClient
+    from anton.core.llm.client import LLMClient
     from anton.memory.cortex import Cortex
     from anton.memory.episodes import EpisodicMemory
     from anton.memory.history_store import HistoryStore
