@@ -19,7 +19,6 @@ from anton.clipboard import (
 )
 from anton.core.session import ChatSession
 from anton.llm.provider import (
-    ContextOverflowError,
     TokenLimitExceeded,
     StreamComplete,
     StreamContextCompacted,
@@ -75,17 +74,13 @@ from anton.datasource_registry import (
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style as PTStyle
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Prompt
 
 if TYPE_CHECKING:
     from rich.console import Console
 
     from anton.config.settings import AntonSettings
-    from anton.context.self_awareness import SelfAwarenessContext
-    from anton.llm.client import LLMClient
-    from anton.memory.cortex import Cortex
     from anton.memory.episodes import EpisodicMemory
-    from anton.memory.history_store import HistoryStore
     from anton.workspace import Workspace
 
 

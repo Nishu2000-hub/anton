@@ -13,6 +13,7 @@ from anton.llm.provider import (
     StreamTaskProgress,
     StreamTextDelta,
     StreamToolResult,
+    TokenLimitExceeded
 )
 from anton.scratchpad import ScratchpadManager
 from anton.core.tools.registry import ToolRegistry
@@ -571,6 +572,9 @@ class ChatSession:
                     yield event
                 break  # completed successfully
             except Exception as _agent_exc:
+                # Token/billing limit — don't retry, let the chat loop handle it
+                if isinstance(_agent_exc, TokenLimitExceeded):
+                    raise
                 _retry_count += 1
                 if _retry_count <= _max_auto_retries:
                     # Inject the error into history and let the LLM try to recover
