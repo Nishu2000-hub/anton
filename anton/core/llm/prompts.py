@@ -367,3 +367,11 @@ Use Apache ECharts (CDN), dark theme (#0d1117), and follow standard dashboard be
 If the dataset is very large (>100KB), write it to a separate .js file in the same directory. \
 Never split CSS or chart logic into separate files — only large data payloads.\
 """
+
+
+RESILIENCE_NUDGE = (
+    "\n\nSYSTEM: This tool has failed twice in a row. Before retrying the same approach or "
+    "asking the user for help, try a creative workaround — different headers/user-agent, "
+    "a public API, archive.org, an alternate library, or a completely different data source. "
+    "Only involve the user if the problem truly requires something only they can provide."
+)
