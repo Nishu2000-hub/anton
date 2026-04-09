@@ -5,8 +5,13 @@ import os
 
 import pytest
 
-import anton.scratchpad as scratchpad_module
-from anton.scratchpad import Cell, Scratchpad, ScratchpadManager
+import anton.core.backends.base as backends_base
+from anton.core.backends.base import Cell
+from anton.core.backends.local import LocalScratchpadRuntime
+from anton.core.backends.manager import ScratchpadManager
+
+# Alias for brevity in tests
+Scratchpad = LocalScratchpadRuntime
 
 
 class TestScratchpadBasicExecution:
@@ -110,8 +115,8 @@ class TestScratchpadReset:
 class TestScratchpadEdgeCases:
     async def test_timeout_kills_process(self, monkeypatch):
         """Long-running code triggers timeout."""
-        monkeypatch.setattr(scratchpad_module, "_CELL_TIMEOUT_DEFAULT", 1)
-        monkeypatch.setattr(scratchpad_module, "_CELL_INACTIVITY_TIMEOUT", 1)
+        monkeypatch.setattr(backends_base, "_CELL_TIMEOUT_DEFAULT", 1)
+        monkeypatch.setattr(backends_base, "_CELL_INACTIVITY_TIMEOUT", 1)
         pad = Scratchpad(name="test")
         await pad.start()
         try:
@@ -298,7 +303,7 @@ class TestScratchpadRenderNotebook:
     async def test_truncate_output_lines(self):
         """Respects line limit."""
         text = "\n".join(f"line {i}" for i in range(50))
-        result = Scratchpad._truncate_output(text, max_lines=10)
+        result = LocalScratchpadRuntime._truncate_output(text, max_lines=10)
         assert "line 0" in result
         assert "line 9" in result
         assert "line 10" not in result
@@ -307,7 +312,7 @@ class TestScratchpadRenderNotebook:
     async def test_truncate_output_chars(self):
         """Respects char limit."""
         text = "\n".join("x" * 80 for _ in range(5))
-        result = Scratchpad._truncate_output(text, max_lines=100, max_chars=200)
+        result = LocalScratchpadRuntime._truncate_output(text, max_lines=100, max_chars=200)
         assert "(truncated)" in result
         assert len(result) < len(text)
 
@@ -402,7 +407,7 @@ class TestScratchpadEnvironment:
 
     async def test_get_llm_available_when_model_set(self):
         """get_llm() should be injected when ANTON_SCRATCHPAD_MODEL is set."""
-        pad = Scratchpad(name="llm-test", _coding_model="claude-test-model")
+        pad = Scratchpad(name="llm-test", coding_model="claude-test-model")
         await pad.start()
         try:
             cell = await pad.execute("llm = get_llm(); print(llm.model)")
@@ -424,7 +429,7 @@ class TestScratchpadEnvironment:
 
     async def test_agentic_loop_available_when_model_set(self):
         """agentic_loop() should be injected alongside get_llm()."""
-        pad = Scratchpad(name="agentic-test", _coding_model="claude-test-model")
+        pad = Scratchpad(name="agentic-test", coding_model="claude-test-model")
         await pad.start()
         try:
             cell = await pad.execute("print(callable(agentic_loop))")
@@ -446,7 +451,7 @@ class TestScratchpadEnvironment:
 
     async def test_generate_object_available_when_model_set(self):
         """generate_object() should be available on the LLM wrapper."""
-        pad = Scratchpad(name="genobj-test", _coding_model="claude-test-model")
+        pad = Scratchpad(name="genobj-test", coding_model="claude-test-model")
         await pad.start()
         try:
             cell = await pad.execute(
@@ -462,7 +467,7 @@ class TestScratchpadEnvironment:
         monkeypatch.setenv("ANTON_ANTHROPIC_API_KEY", "sk-ant-test-123")
         # Remove ANTHROPIC_API_KEY if set, to test the bridge
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        pad = Scratchpad(name="key-test", _coding_model="test-model")
+        pad = Scratchpad(name="key-test", coding_model="test-model")
         await pad.start()
         try:
             cell = await pad.execute(
@@ -627,10 +632,7 @@ class TestVenvPersistence:
     async def test_remove_deletes_persistent_venv(self, tmp_path):
         """ScratchpadManager.remove() fully deletes the persistent venv dir."""
         import shutil
-        venvs_base = tmp_path / "venvs"
         mgr = ScratchpadManager(workspace_path=tmp_path)
-        # Override base to use our tmp dir
-        mgr._venvs_base = venvs_base
         try:
             pad = await mgr.get_or_create("deleteme")
             venv_dir = pad._venv_dir
@@ -639,7 +641,7 @@ class TestVenvPersistence:
             assert not os.path.exists(venv_dir)
         finally:
             await mgr.close_all()
-            shutil.rmtree(venvs_base, ignore_errors=True)
+            shutil.rmtree(tmp_path / ".anton", ignore_errors=True)
 
     async def test_requirements_saved_on_close(self, tmp_path):
         """requirements.txt is written when pad has installed packages."""
@@ -721,8 +723,8 @@ class TestProgressAndTimeouts:
 
     async def test_progress_resets_inactivity_timeout(self, monkeypatch):
         """Code that calls progress() frequently should survive even with a short inactivity timeout."""
-        monkeypatch.setattr(scratchpad_module, "_CELL_INACTIVITY_TIMEOUT", 2)
-        monkeypatch.setattr(scratchpad_module, "_CELL_TIMEOUT_DEFAULT", 10)
+        monkeypatch.setattr(backends_base, "_CELL_INACTIVITY_TIMEOUT", 2)
+        monkeypatch.setattr(backends_base, "_CELL_TIMEOUT_DEFAULT", 10)
         pad = Scratchpad(name="progress-keep-alive")
         await pad.start()
         try:
@@ -741,8 +743,8 @@ class TestProgressAndTimeouts:
 
     async def test_inactivity_timeout_kills_without_progress(self, monkeypatch):
         """Code that sleeps without progress() calls should be killed by inactivity timeout."""
-        monkeypatch.setattr(scratchpad_module, "_CELL_INACTIVITY_TIMEOUT", 2)
-        monkeypatch.setattr(scratchpad_module, "_CELL_TIMEOUT_DEFAULT", 60)
+        monkeypatch.setattr(backends_base, "_CELL_INACTIVITY_TIMEOUT", 2)
+        monkeypatch.setattr(backends_base, "_CELL_TIMEOUT_DEFAULT", 60)
         pad = Scratchpad(name="no-progress")
         await pad.start()
         try:
@@ -780,14 +782,14 @@ class TestProgressAndTimeouts:
 
     async def test_compute_timeouts_no_estimate(self):
         """No estimate should use defaults."""
-        from anton.scratchpad import _compute_timeouts
+        from anton.core.backends.base import _compute_timeouts
         total, inactivity = _compute_timeouts(0)
         assert total == 120.0
         assert inactivity == 30.0
 
     async def test_compute_timeouts_with_estimate(self):
         """Estimate should scale total timeout and inactivity with no hard cap."""
-        from anton.scratchpad import _compute_timeouts
+        from anton.core.backends.base import _compute_timeouts
 
         # Small estimate: max(10*2, 10+30) = max(20, 40) = 40
         total, inactivity = _compute_timeouts(10)
