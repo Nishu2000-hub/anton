@@ -13,8 +13,14 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.padding import Padding
 
+from anton.connect_collector import ConnectionCollector, extract_variables
 from anton.data_vault import DataVault
-from anton.datasource_registry import DatasourceEngine, DatasourceField, DatasourceRegistry
+from anton.datasource_registry import (
+    AuthMethod,
+    DatasourceEngine,
+    DatasourceField,
+    DatasourceRegistry,
+)
 from anton.utils.datasources import (
     register_secret_vars,
     remove_engine_block,
@@ -549,15 +555,56 @@ async def _reconnect_to_saved(
     return session
 
 
+def _record_redirect(
+    session: "ChatSession",
+    collector: ConnectionCollector,
+    user_message: str,
+    target_engine: str | None = None,
+) -> None:
+    """Record a mid-flow redirect so the main agent can pick up where we left off.
+
+    Appends a structured assistant message to history with the variables
+    collected so far and the user's last message, so the LLM can decide
+    whether to re-call connect_new_datasource with the new engine and
+    pre-fill the already-known variables.
+    """
+    collector.redirect_message = user_message.strip()
+    payload = collector.to_redirect_result()
+    parts = [
+        f"REDIRECT during {payload['engine_display']} connection setup.",
+        f"Collected so far: {json.dumps(payload['collected_variables'])}.",
+    ]
+    if payload["missing_required"]:
+        parts.append(
+            f"Still missing: {', '.join(payload['missing_required'])}."
+        )
+    if target_engine:
+        parts.append(f"User wants to switch to: {target_engine}.")
+    parts.append(f'User said: "{collector.redirect_message}".')
+    parts.append(
+        "Decide what to do next — you may call connect_new_datasource "
+        "again with the correct engine and pass known_variables to "
+        "pre-fill what's already collected."
+    )
+    session._history.append(
+        {"role": "assistant", "content": " ".join(parts)}
+    )
+
+
 async def handle_connect_datasource(
     console: Console,
     scratchpads: ScratchpadManager,
     session: "ChatSession",
     datasource_name: str | None = None,
     prefill: str | None = None,
+    known_variables: dict[str, str] | None = None,
 ) -> "ChatSession":
     """
     Connect a data source by entering credentials, either for a new name or re-entering for an existing one.
+
+    `known_variables` may pre-fill credential fields (e.g. when called as a
+    tool by the LLM, which may have already extracted host/port/etc. from
+    the conversation).
     """
 
     vault = DataVault()
@@ -959,6 +1006,7 @@ async def handle_connect_datasource(
 
     assert engine_def is not None  # custom_source path always returns before this line
     active_fields = engine_def.fields
+    chosen_method: "AuthMethod | None" = None
     if engine_def.auth_method == "choice" and engine_def.auth_methods:
         console.print()
         console.print(
@@ -1020,63 +1068,110 @@ async def handle_connect_datasource(
             console, session, engine_def.display_name, None, active_fields,
         )
 
-    while True:
-        mode_answer = await prompt_or_cancel(
-            "(anton) Do you have these available?",
-            choices_display="y/n/list params", default="y",
+    # ── Smart credential collection ────────────────────────────────────
+    # Track filled vs. missing fields as a puzzle. Each user response is
+    # parsed via the LLM to extract any variables mentioned, so users can
+    # fill multiple fields at once, paste a connection string, or change
+    # direction mid-flow.
+    collector = ConnectionCollector(
+        engine_def=engine_def,
+        auth_method=chosen_method,
+    )
+    if known_variables:
+        accepted = collector.fill_many(known_variables)
+        if accepted:
+            console.print(
+                f"[anton.muted]        Pre-filled from context: "
+                f"{', '.join(accepted)}[/]"
+            )
+            console.print()
+
+    known_engine_slugs = [e.engine for e in registry.all_engines()]
+    partial = False
+
+    while not collector.is_complete:
+        collector.format_status(console)
+        console.print()
+
+        next_field = collector.next_field
+        # When only one required field remains, ask for it directly with
+        # the matching prompt style (password masking, default value,
+        # etc.). No LLM extraction needed — the answer IS the value.
+        only_one_required = (
+            next_field is not None
+            and next_field.required
+            and len(collector.missing_required) == 1
         )
-        if mode_answer is None:
-            return session
-        mode_answer = mode_answer.strip().lower()
 
-        if mode_answer in ("y", "n"):
-            break
+        if only_one_required and next_field is not None:
+            label = f"(anton) {next_field.name}"
+            if next_field.secret:
+                value = await prompt_or_cancel(label, password=True)
+            elif next_field.default:
+                value = await prompt_or_cancel(label, default=next_field.default)
+            else:
+                value = await prompt_or_cancel(label)
+            if value is None:
+                return session
+            if not value:
+                # Empty answer for the only missing required field —
+                # treat as a partial save signal.
+                partial = True
+                break
+            collector.fill(next_field.name, value)
+            continue
 
-        # Check if user gave valid comma-separated param names
-        requested = {n.strip().lower() for n in mode_answer.split(",")}
-        matched = [f for f in active_fields if f.name.lower() in requested]
-        if matched:
-            break
-
-        console.print(
-            "[anton.warning]        Please enter y, n, or a comma-separated list of parameter names "
-            f"({', '.join(f.name for f in active_fields)}).[/]"
+        # Multiple fields remain — open prompt that accepts bulk input
+        missing_names = ", ".join(f.name for f in collector.missing_required)
+        prompt_label = (
+            f"(anton) Provide values for {missing_names} "
+            f"(one at a time, or 'key=value key2=value2', or 'skip')"
         )
-        console.print()
-
-    if mode_answer == "n":
-        console.print()
-        console.print(
-            "[anton.cyan](anton)[/] No problem. Which parameters do you have? "
-            "I'll save a partial connection now, and you can fill in the rest later "
-            "with [bold]/edit[/]."
-        )
-        console.print()
-        console.print("       Provide what you have (press enter to skip any field):")
-        console.print()
-        fields_to_collect = active_fields
-        partial = True
-    elif mode_answer == "y":
-        fields_to_collect = active_fields
-        partial = False
-    else:
-        fields_to_collect = matched
-        partial = False
-
-    console.print()
-    credentials: dict[str, str] = {}
-
-    for f in fields_to_collect:
-        if f.secret:
-            value = await prompt_or_cancel(f"(anton) {f.name}", password=True)
-        elif f.default:
-            value = await prompt_or_cancel(f"(anton) {f.name}", default=f.default)
-        else:
-            value = await prompt_or_cancel(f"(anton) {f.name}")
+        value = await prompt_or_cancel(prompt_label)
         if value is None:
             return session
-        if value:
-            credentials[f.name] = value
+        if value.strip().lower() == "skip":
+            partial = True
+            break
+        if not value.strip():
+            continue
+
+        extracted = await extract_variables(
+            value,
+            expected_fields=collector.active_fields,
+            current_engine=engine_def.engine,
+            current_engine_display=engine_def.display_name,
+            known_engine_slugs=known_engine_slugs,
+            session=session,
+        )
+
+        if extracted.is_redirect:
+            _record_redirect(
+                session, collector, value, extracted.redirect_engine
+            )
+            return session
+
+        if extracted.variables:
+            filled = collector.fill_many(extracted.variables)
+            if filled:
+                console.print(
+                    f"[anton.muted]        Got: {', '.join(filled)}[/]"
+                )
+                console.print()
+                continue
+
+        # LLM returned nothing structured — fall back to treating the
+        # input as the value for the next missing required field.
+        if next_field is not None:
+            collector.fill(next_field.name, value.strip())
+        else:
+            console.print(
+                "[anton.warning]        Couldn't parse that. "
+                "Try 'key=value' or one value at a time.[/]"
+            )
+            console.print()
+
+    credentials: dict[str, str] = dict(collector.collected)
 
     if partial:
         auto_name = uuid.uuid4().hex[:8]

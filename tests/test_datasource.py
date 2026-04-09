@@ -585,12 +585,12 @@ class TestHandleConnectDatasource:
         assert DataVault(vault_dir=vault_dir).list_connections() == []
 
     @pytest.mark.asyncio
-    async def test_partial_save_on_n_answer(self, registry, vault_dir, make_session):
-        """Answering 'n' saves partial credentials and returns without testing."""
+    async def test_partial_save_on_skip(self, registry, vault_dir, make_session):
+        """Answering 'skip' at the bulk prompt saves partial credentials and returns without testing."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
-        responses = iter(["PostgreSQL", "n", "n", "db.example.com", "", "", "", "", ""])
+        responses = iter(["PostgreSQL", "n", "skip"])
 
         with (
             patch("anton.commands.datasource.DataVault", return_value=vault),
@@ -627,13 +627,11 @@ class TestHandleConnectDatasource:
             [
                 "PostgreSQL",
                 "n",
-                "y",
                 "db.example.com",
                 "5432",
                 "prod_db",
                 "alice",
                 "s3cr3t",
-                "",
             ]
         )
 
@@ -679,13 +677,11 @@ class TestHandleConnectDatasource:
             [
                 "PostgreSQL",
                 "n",
-                "y",
                 "db.example.com",
                 "5432",
                 "prod_db",
                 "alice",
                 "wrongpassword",
-                "",
                 "y",
                 "correctpassword",
             ]
@@ -723,13 +719,11 @@ class TestHandleConnectDatasource:
             [
                 "PostgreSQL",
                 "n",
-                "y",
                 "db.example.com",
                 "5432",
                 "prod_db",
                 "alice",
                 "badpass",
-                "",
                 "n",
             ]
         )
@@ -765,13 +759,11 @@ class TestHandleConnectDatasource:
             [
                 "PostgreSQL",
                 "n",
-                "y",
                 "db.example.com",
                 "5432",
                 "prod_db",
                 "alice",
                 "s3cr3t",
-                "",
             ]
         )
 
@@ -800,7 +792,7 @@ class TestHandleConnectDatasource:
         pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
 
-        responses = iter(["HubSpot", "1", "n", "y", "pat-na1-abc123"])
+        responses = iter(["HubSpot", "1", "n", "pat-na1-abc123"])
 
         with (
             patch("anton.commands.datasource.DataVault", return_value=vault),
@@ -822,13 +814,23 @@ class TestHandleConnectDatasource:
         assert "client_secret" not in saved
 
     @pytest.mark.asyncio
-    async def test_selective_field_collection(
+    async def test_bulk_key_value_extraction(
         self, registry, vault_dir, make_session, make_cell, make_pad
     ):
-        """Typing 'host,user,password' collects only those three fields."""
+        """A single bulk response with key=value pairs fills multiple fields at once."""
         session = make_session()
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
+
+        # Mock the LLM to return a structured JSON extraction when it sees
+        # the bulk key=value string.
+        bulk_response = MagicMock()
+        bulk_response.content = (
+            '{"variables": {"host": "db.example.com", "port": "5432", '
+            '"database": "prod_db", "user": "alice"}, '
+            '"is_redirect": false, "redirect_engine": "", "redirect_reason": ""}'
+        )
+        session._llm.plan = AsyncMock(return_value=bulk_response)
 
         pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
@@ -837,10 +839,8 @@ class TestHandleConnectDatasource:
             [
                 "PostgreSQL",
                 "n",
-                "host,user,password",
-                "db.example.com",
-                "alice",
-                "s3cr3t",
+                "host=db.example.com port=5432 database=prod_db user=alice",
+                "s3cr3t",  # only password remains → single-field prompt
             ]
         )
 
@@ -858,7 +858,11 @@ class TestHandleConnectDatasource:
         assert len(conns) == 1
         saved = vault.load("postgresql", conns[0]["name"])
         assert saved is not None
-        assert set(saved.keys()) == {"host", "user", "password"}
+        assert saved["host"] == "db.example.com"
+        assert saved["port"] == "5432"
+        assert saved["database"] == "prod_db"
+        assert saved["user"] == "alice"
+        assert saved["password"] == "s3cr3t"
 
 
 class TestCredentialScrubbing:
@@ -926,13 +930,11 @@ class TestCredentialScrubbing:
             [
                 "PostgreSQL",
                 "n",
-                "y",
                 "db.host.com",
                 "5432",
                 "mydb",
                 "alice",
                 secret_pw,
-                "public",
             ]
         )
 
@@ -1483,13 +1485,11 @@ class TestEnvActivationCollisionFree:
             [
                 "PostgreSQL",
                 "n",
-                "y",
                 "db.example.com",
                 "5432",
                 "prod_db",
                 "alice",
                 "s3cr3t",
-                "",
             ]
         )
 
@@ -2569,7 +2569,6 @@ class TestPromptCopyConsistency:
             "(reconnect/cancel)",
             "(anton) Would you like to re-enter your credentials? (y/n)",
             "(anton) Use this datasource? (y/n)",
-            "(anton) Do you have these available? (y/n/<list params>)",
             "(anton) (reconnect/cancel)",
         ],
     )

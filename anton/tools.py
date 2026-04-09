@@ -15,6 +15,12 @@ async def handle_connect_datasource(session: ChatSession, tc_input: dict) -> str
     if not engine:
         return "Engine name is required."
 
+    raw_known = tc_input.get("known_variables") or {}
+    known_variables: dict[str, str] = (
+        {str(k): str(v) for k, v in raw_known.items() if v is not None and v != ""}
+        if isinstance(raw_known, dict) else {}
+    )
+
     console = session._console
     if console is None:
         return "Cannot connect datasource — no console available."
@@ -36,6 +42,7 @@ async def handle_connect_datasource(session: ChatSession, tc_input: dict) -> str
         session._scratchpads,
         session,
         prefill=engine,
+        known_variables=known_variables or None,
     )
 
     # Check if a new connection was actually added
@@ -48,30 +55,42 @@ async def handle_connect_datasource(session: ChatSession, tc_input: dict) -> str
             f"Successfully connected '{slug}'. The datasource is now available. "
             f"Continue helping the user with their original request using this data source."
         )
-    else:
-        # User cancelled or connection failed — show briefly with spinner
-        # so user knows the agent is picking back up
-        from rich.live import Live
-        from rich.spinner import Spinner
-        from rich.text import Text
-        import asyncio
 
-        console.print()
-        console.print("[anton.muted]  No worries, let's continue where we left off.[/]")
-        with Live(
-            Spinner("dots", text=Text("", style="anton.muted"), style="anton.cyan"),
-            console=console,
-            refresh_per_second=10,
-            transient=True,
+    # Did the flow record a mid-flow redirect? If so, the last history
+    # entry starts with "REDIRECT" — pass it through instead of treating
+    # it as a cancellation.
+    if session._history and isinstance(session._history[-1], dict):
+        last = session._history[-1]
+        if (
+            last.get("role") == "assistant"
+            and isinstance(last.get("content"), str)
+            and last["content"].startswith("REDIRECT")
         ):
-            await asyncio.sleep(1.5)
-        console.print()
-        return (
-            f"CANCELLED: The user pressed Escape and cancelled the '{engine}' connection. "
-            f"STOP — do NOT call connect_new_datasource again. Do NOT retry. "
-            f"Acknowledge the cancellation briefly and ask the user what they'd like to do instead. "
-            f"Respond with TEXT ONLY — no tool calls."
-        )
+            return last["content"]
+
+    # User cancelled or connection failed — show briefly with spinner
+    # so user knows the agent is picking back up
+    from rich.live import Live
+    from rich.spinner import Spinner
+    from rich.text import Text
+    import asyncio
+
+    console.print()
+    console.print("[anton.muted]  No worries, let's continue where we left off.[/]")
+    with Live(
+        Spinner("dots", text=Text("", style="anton.muted"), style="anton.cyan"),
+        console=console,
+        refresh_per_second=10,
+        transient=True,
+    ):
+        await asyncio.sleep(1.5)
+    console.print()
+    return (
+        f"CANCELLED: The user pressed Escape and cancelled the '{engine}' connection. "
+        f"STOP — do NOT call connect_new_datasource again. Do NOT retry. "
+        f"Acknowledge the cancellation briefly and ask the user what they'd like to do instead. "
+        f"Respond with TEXT ONLY — no tool calls."
+    )
 
 
 CONNECT_DATASOURCE_TOOL = ToolDef(
@@ -83,6 +102,9 @@ CONNECT_DATASOURCE_TOOL = ToolDef(
         "where the user enters their credentials.\n\n"
         "Pass the datasource type/name (e.g. 'gmail', 'postgres', 'salesforce', 'hubspot'). "
         "Anton will match it to the right connector and guide the user through setup.\n\n"
+        "If the user has ALREADY mentioned credential values in the conversation "
+        "(e.g. 'connect to dynamodb, my access key is AKIA... and region is us-east-1'), "
+        "pass them as `known_variables` so the user is not asked again.\n\n"
         "Do NOT print any message before calling this tool — it handles the user-facing output."
     ),
     input_schema = {
@@ -95,6 +117,16 @@ CONNECT_DATASOURCE_TOOL = ToolDef(
             "reason": {
                 "type": "string",
                 "description": "Brief explanation of why this datasource is needed",
+            },
+            "known_variables": {
+                "type": "object",
+                "description": (
+                    "Pre-extracted credential field values from the conversation. "
+                    "Use snake_case field names (e.g. {\"host\": \"db.example.com\", "
+                    "\"port\": \"5432\", \"user\": \"admin\"}). Only pass fields the "
+                    "user actually mentioned — never invent values."
+                ),
+                "additionalProperties": {"type": "string"},
             },
         },
         "required": ["engine"],
