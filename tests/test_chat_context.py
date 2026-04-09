@@ -13,7 +13,7 @@ from anton.minds_client import describe_minds_connection_error
 from anton.config.settings import AntonSettings
 from anton.core.tools.tool_defs import MEMORIZE_TOOL
 from anton.context.self_awareness import SelfAwarenessContext
-from anton.llm.provider import LLMResponse, ToolCall, Usage
+from anton.core.llm.provider import LLMResponse, ToolCall, Usage
 from anton.workspace import Workspace
 from anton.memory.cortex import Cortex
 from anton.memory.hippocampus import Hippocampus
