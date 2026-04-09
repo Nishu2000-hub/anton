@@ -1,7 +1,7 @@
 from anton.core.tools.tool_handlers import handle_scratchpad, handle_memorize, handle_recall
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Optional
 
 
 @dataclass
@@ -10,6 +10,7 @@ class ToolDef:
     description: str
     input_schema: dict
     handler: Callable  # async (session, tc_input) -> str
+    prompt: Optional[str] = None  # Optional prompt relevant to the tool to be injected into the system prompt.
 
 
 SCRATCHPAD_TOOL = ToolDef(

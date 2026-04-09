@@ -21,10 +21,10 @@ from rich.text import Text
 from anton import __version__
 
 from anton.utils.prompt import prompt_or_cancel
-from anton.llm.openai import build_chat_completion_kwargs
+from anton.core.llm.openai import build_chat_completion_kwargs
 
 from anton.chat import ChatSession
-from anton.llm.client import LLMClient
+from anton.core.llm.client import LLMClient
 from anton.scratchpad import ScratchpadManager
 
 from anton.commands.datasource import (

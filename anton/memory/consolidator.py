@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from anton.memory.hippocampus import Engram
 
 if TYPE_CHECKING:
-    from anton.llm.client import LLMClient
+    from anton.core.llm.client import LLMClient
     from anton.scratchpad import Cell
 
 

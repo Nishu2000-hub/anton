@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from anton.memory.hippocampus import Engram, Hippocampus
 
 if TYPE_CHECKING:
-    from anton.llm.client import LLMClient
+    from anton.core.llm.client import LLMClient
 
 
 _IDENTITY_EXTRACT_PROMPT = """\

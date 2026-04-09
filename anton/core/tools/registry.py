@@ -27,6 +27,10 @@ class ToolRegistry:
         """
         self._tools.append(tool_def)
 
+    def get_tool_defs(self) -> list["ToolDef"]:
+        """Return the registered `ToolDef` objects (for prompt injection, etc.)."""
+        return list(self._tools)
+
     async def dispatch_tool(
         self, session: "ChatSession", tool_name: str, tc_input: dict
     ) -> str:
@@ -45,8 +49,15 @@ class ToolRegistry:
         """
         tool_defs = []
         for tool_def in self._tools:
-            # Remove the handler from the tool definition.
+            # Remove the handler and prompt from the tool definition.
             tool_def = asdict(tool_def)
             tool_def.pop("handler")
+            tool_def.pop("prompt")
             tool_defs.append(tool_def)
         return tool_defs
+
+    def get_tool_defs(self) -> list["ToolDef"]:
+        """
+        Get the tool definitions.
+        """
+        return self._tools

@@ -4,8 +4,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from anton.llm.prompts import CHAT_SYSTEM_PROMPT, build_visualizations_prompt
-from anton.llm.provider import (
+from anton.core.llm.prompt_builder import ChatSystemPromptBuilder
+from anton.core.llm.provider import (
     ContextOverflowError,
     StreamComplete,
     StreamContextCompacted,
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from rich.console import Console
     from anton.context.self_awareness import SelfAwarenessContext
     from anton.chat_ui import EscapeWatcher
-    from anton.llm.client import LLMClient
+    from anton.core.llm.client import LLMClient
     from anton.memory.cortex import Cortex
     from anton.memory.episodes import EpisodicMemory
     from anton.memory.history_store import HistoryStore
@@ -105,6 +105,7 @@ class ChatSession:
         history_store: HistoryStore | None = None,
         session_id: str | None = None,
         proactive_dashboards: bool = False,
+        output_dir: str = "",
         tools: list[ToolDef] | None = None,
     ) -> None:
         self._llm = llm_client
@@ -114,6 +115,7 @@ class ChatSession:
         self._runtime_context = runtime_context
         self._proactive_dashboards = proactive_dashboards
         self._extra_tools = tools or []
+        self._output_dir = output_dir
         self._workspace = workspace
         self._console = console
         self._history: list[dict] = list(initial_history) if initial_history else []
@@ -189,32 +191,40 @@ class ChatSession:
         _now = _dt.datetime.now()
         _current_datetime = _now.strftime("%A, %B %d, %Y at %I:%M %p")
 
-        prompt = CHAT_SYSTEM_PROMPT.format(
-            runtime_context=self._runtime_context,
-            visualizations_section=build_visualizations_prompt(
-                self._proactive_dashboards
-            ),
-            current_datetime=_current_datetime,
-        )
         # Inject memory context (replaces old self_awareness)
+        memory_section = ""
         if self._cortex is not None:
             memory_section = await self._cortex.build_memory_context(user_message)
-            if memory_section:
-                prompt += memory_section
-        elif self._self_awareness is not None:
+
+        sa_section = ""
+        if self._self_awareness is not None and self._cortex is None:
             # Fallback for legacy usage (tests, etc.)
             sa_section = self._self_awareness.build_prompt_section()
-            if sa_section:
-                prompt += sa_section
+
         # Inject anton.md project context (user-written takes priority)
+        md_context = ""
         if self._workspace is not None:
             md_context = self._workspace.build_anton_md_context()
-            if md_context:
-                prompt += md_context
+
         # Inject connected datasource context without credentials
         ds_ctx = build_datasource_context(active_only=self._active_datasource)
-        if ds_ctx:
-            prompt += ds_ctx
+
+        # Ensure the registry is populated before we extract tool prompts.
+        self._build_tools()
+
+        prompt_builder = ChatSystemPromptBuilder()
+        prompt = prompt_builder.build(
+            output_dir=self._output_dir,
+            current_datetime=_current_datetime,
+            runtime_context=self._runtime_context,
+            proactive_dashboards=self._proactive_dashboards,
+            tool_defs=self.tool_registry.get_tool_defs(),
+            memory_context=memory_section,
+            project_context=md_context,
+            self_awareness_context=sa_section,
+            datasource_context=ds_ctx,
+        )
+
         return prompt
 
     # Packages the LLM is most likely to care about when writing scratchpad code.
@@ -423,8 +433,8 @@ class ChatSession:
         self._history.append({"role": "user", "content": user_input})
 
         user_msg_str = user_input if isinstance(user_input, str) else ""
-        system = await self._build_system_prompt(user_msg_str)
         tools = self._build_tools()
+        system = await self._build_system_prompt(user_msg_str)
 
         try:
             response = await self._llm.plan(
@@ -646,8 +656,8 @@ class ChatSession:
         self, user_message: str = ""
     ) -> AsyncIterator[StreamEvent]:
         """Stream one LLM call, handle tool loops, yield all events."""
-        system = await self._build_system_prompt(user_message)
         tools = self._build_tools()
+        system = await self._build_system_prompt(user_message)
 
         # Guard against summarizing an already-summarized history within the same
         # turn (e.g. ContextOverflowError on first call + pressure > threshold on

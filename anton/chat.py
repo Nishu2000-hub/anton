@@ -18,7 +18,7 @@ from anton.clipboard import (
     save_clipboard_image,
 )
 from anton.core.session import ChatSession, TOKEN_STATUS_CACHE_TTL
-from anton.llm.provider import (
+from anton.core.llm.provider import (
     TokenLimitExceeded,
     StreamComplete,
     StreamContextCompacted,
@@ -911,7 +911,7 @@ async def _chat_loop(
     console: Console, settings: AntonSettings, *, resume: bool = False, first_run: bool = False, desktop_first_run: bool = False
 ) -> None:
     from anton.context.self_awareness import SelfAwarenessContext
-    from anton.llm.client import LLMClient
+    from anton.core.llm.client import LLMClient
     from anton.memory.cortex import Cortex
     from anton.workspace import Workspace
 

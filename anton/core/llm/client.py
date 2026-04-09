@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from anton.llm.provider import LLMProvider, LLMResponse, StreamEvent
+from .provider import LLMProvider, LLMResponse, StreamEvent
 
 if TYPE_CHECKING:
     from anton.config.settings import AntonSettings
@@ -86,8 +86,8 @@ class LLMClient:
 
     @classmethod
     def from_settings(cls, settings: AntonSettings) -> LLMClient:
-        from anton.llm.anthropic import AnthropicProvider
-        from anton.llm.openai import OpenAIProvider
+        from .anthropic import AnthropicProvider
+        from .openai import OpenAIProvider
 
         providers = {
             "anthropic": lambda: AnthropicProvider(api_key=settings.anthropic_api_key),

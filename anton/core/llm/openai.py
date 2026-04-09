@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 
 import openai
 
-from anton.llm.provider import (
+from .provider import (
     ContextOverflowError,
     LLMProvider,
     LLMResponse,
@@ -234,7 +234,7 @@ class OpenAIProvider(LLMProvider):
             if exc.status_code == 429 and isinstance(exc.body, dict) and exc.body.get("detail"):
                 msg = f"Server returned 429 — {exc.body['detail']}"
                 msg += " Visit https://mdb.ai to upgrade or to top up your tokens."
-                from anton.llm.provider import TokenLimitExceeded
+                from .provider import TokenLimitExceeded
                 raise TokenLimitExceeded(msg) from exc
             else:
                 msg = f"Server returned {exc.status_code} — the LLM endpoint may be temporarily unavailable. Try again in a moment."
@@ -362,7 +362,7 @@ class OpenAIProvider(LLMProvider):
             if exc.status_code == 429 and isinstance(exc.body, dict) and exc.body.get("detail"):
                 msg = f"Server returned 429 — {exc.body['detail']}"
                 msg += " Visit https://mdb.ai to upgrade or top up your tokens."
-                from anton.llm.provider import TokenLimitExceeded
+                from .provider import TokenLimitExceeded
                 raise TokenLimitExceeded(msg) from exc
             else:
                 msg = f"Server returned {exc.status_code} — the LLM endpoint may be temporarily unavailable. Try again in a moment."
