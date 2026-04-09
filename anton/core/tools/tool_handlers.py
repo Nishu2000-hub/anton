@@ -109,13 +109,13 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
         return format_cell_result(cell)
 
     elif action == "view":
-        pad = session._scratchpads._pads.get(name)
+        pad = session._scratchpads.pads.get(name)
         if pad is None:
             return f"No scratchpad named '{name}'."
         return pad.view()
 
     elif action == "reset":
-        pad = session._scratchpads._pads.get(name)
+        pad = session._scratchpads.pads.get(name)
         if pad is None:
             return f"No scratchpad named '{name}'."
         await pad.reset()
@@ -125,7 +125,7 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
         return await session._scratchpads.remove(name)
 
     elif action == "dump":
-        pad = session._scratchpads._pads.get(name)
+        pad = session._scratchpads.pads.get(name)
         if pad is None:
             return f"No scratchpad named '{name}'."
         return pad.render_notebook()

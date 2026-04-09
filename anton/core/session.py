@@ -16,7 +16,7 @@ from anton.core.llm.provider import (
     StreamToolResult,
     TokenLimitExceeded
 )
-from anton.scratchpad import ScratchpadManager
+from anton.core.backends.manager import ScratchpadManager
 from anton.core.tools.registry import ToolRegistry
 from anton.core.tools.tool_defs import SCRATCHPAD_TOOL, MEMORIZE_TOOL, RECALL_TOOL, ToolDef
 from anton.core.utils.scratchpad import prepare_scratchpad_exec, format_cell_result
@@ -283,7 +283,7 @@ class ChatSession:
 
     def _build_core_tools(self) -> None:
         scratchpad_tool = SCRATCHPAD_TOOL
-        pkg_list = self._scratchpads._available_packages
+        pkg_list = self._scratchpads.available_packages
         if pkg_list:
             notable = sorted(p for p in pkg_list if p.lower() in self._NOTABLE_PACKAGES)
             if notable:
@@ -420,7 +420,7 @@ class ChatSession:
     def _compact_scratchpads(self) -> bool:
         """Compact all active scratchpads. Returns True if any were compacted."""
         compacted = False
-        for pad in self._scratchpads._pads.values():
+        for pad in self._scratchpads.pads.values():
             if pad._compact_cells():
                 compacted = True
         return compacted
@@ -840,7 +840,7 @@ class ChatSession:
                                 import time as _time
 
                                 _sp_t0 = _time.monotonic()
-                                from anton.scratchpad import Cell
+                                from anton.core.backends.base import Cell
 
                                 cell = None
                                 async for item in pad.execute_streaming(
@@ -848,8 +848,10 @@ class ChatSession:
                                     description=description,
                                     estimated_time=estimated_time,
                                     estimated_seconds=estimated_seconds,
-                                    cancel_event=self._cancel_event,
                                 ):
+                                    if self._cancel_event.is_set():
+                                        await pad.cancel()
+                                        break
                                     if isinstance(item, str):
                                         yield StreamTaskProgress(
                                             phase="scratchpad", message=item
@@ -1172,7 +1174,7 @@ class ChatSession:
         from anton.core.memory.consolidator import Consolidator
 
         consolidator = Consolidator()
-        for pad in self._scratchpads._pads.values():
+        for pad in self._scratchpads.pads.values():
             cells = list(pad.cells)
             if consolidator.should_replay(cells):
                 asyncio.create_task(self._consolidate(cells))

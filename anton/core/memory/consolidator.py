@@ -30,7 +30,7 @@ from anton.core.memory.hippocampus import Engram
 
 if TYPE_CHECKING:
     from anton.core.llm.client import LLMClient
-    from anton.scratchpad import Cell
+    from anton.core.backends.base import Cell
 
 
 class Consolidator:
