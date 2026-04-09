@@ -58,14 +58,16 @@ async def handle_memorize(session: ChatSession, tc_input: dict) -> str:
             scope = "project"
 
         # User-sourced memories (via explicit tool call) get high confidence
-        engrams.append(Engram(
-            text=entry["text"],
-            kind=kind,
-            scope=scope,
-            confidence="high",
-            topic=entry.get("topic", ""),
-            source="user",
-        ))
+        engrams.append(
+            Engram(
+                text=entry["text"],
+                kind=kind,
+                scope=scope,
+                confidence="high",
+                topic=entry.get("topic", ""),
+                source="user",
+            )
+        )
 
     if not engrams:
         return "No valid entries provided."

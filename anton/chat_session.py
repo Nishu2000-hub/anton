@@ -67,6 +67,7 @@ def rebuild_session(
     """Rebuild LLMClient + ChatSession after settings change."""
     from anton.core.llm.client import LLMClient
     from anton.chat import ChatSession
+    from anton.core.session import ChatSessionConfig
 
     state["llm_client"] = LLMClient.from_settings(settings)
 
@@ -84,8 +85,8 @@ def rebuild_session(
         if settings.coding_provider == "anthropic"
         else settings.openai_api_key
     ) or ""
-    return ChatSession(
-        state["llm_client"],
+    return ChatSession(ChatSessionConfig(
+        llm_client=state["llm_client"],
         self_awareness=self_awareness,
         cortex=cortex,
         episodic=episodic,
@@ -99,4 +100,4 @@ def rebuild_session(
         session_id=session_id,
         proactive_dashboards=settings.proactive_dashboards,
         output_dir=settings.output_dir,
-    )
+    ))

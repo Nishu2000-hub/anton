@@ -1,4 +1,8 @@
-from anton.core.tools.tool_handlers import handle_scratchpad, handle_memorize, handle_recall
+from anton.core.tools.tool_handlers import (
+    handle_scratchpad,
+    handle_memorize,
+    handle_recall,
+)
 
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -10,12 +14,14 @@ class ToolDef:
     description: str
     input_schema: dict
     handler: Callable  # async (session, tc_input) -> str
-    prompt: Optional[str] = None  # Optional prompt relevant to the tool to be injected into the system prompt.
+    prompt: Optional[str] = (
+        None  # Optional prompt relevant to the tool to be injected into the system prompt.
+    )
 
 
 SCRATCHPAD_TOOL = ToolDef(
-    name = "scratchpad",
-    description = (
+    name="scratchpad",
+    description=(
         "Run Python code in a persistent scratchpad. Use this whenever you need to "
         "count characters, do math, parse data, transform text, or any task that "
         "benefits from precise computation rather than guessing. Variables, imports, "
@@ -51,10 +57,13 @@ SCRATCHPAD_TOOL = ToolDef(
         "for every exec call. For very long operations, provide a realistic estimate "
         "and use progress() to keep the cell alive."
     ),
-        input_schema = {
+    input_schema={
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["exec", "view", "reset", "remove", "dump", "install"]},
+            "action": {
+                "type": "string",
+                "enum": ["exec", "view", "reset", "remove", "dump", "install"],
+            },
             "name": {"type": "string", "description": "Scratchpad name"},
             "code": {
                 "type": "string",
@@ -78,13 +87,13 @@ SCRATCHPAD_TOOL = ToolDef(
         },
         "required": ["action", "name"],
     },
-    handler = handle_scratchpad,
+    handler=handle_scratchpad,
 )
 
 
 MEMORIZE_TOOL = ToolDef(
-    name = "memorize",
-    description = (
+    name="memorize",
+    description=(
         "Encode a rule or lesson into long-term memory for future sessions. "
         "Use this when you learn something important, discover a useful pattern, "
         "or the user asks you to remember something.\n\n"
@@ -95,7 +104,7 @@ MEMORIZE_TOOL = ToolDef(
         "- lesson: Factual knowledge ('CoinGecko rate-limits at 50/min')\n"
         "- profile: Fact about the user ('Name: Jorge', 'Prefers dark mode')"
     ),
-    input_schema = {
+    input_schema={
         "type": "object",
         "properties": {
             "entries": {
@@ -126,13 +135,13 @@ MEMORIZE_TOOL = ToolDef(
         },
         "required": ["entries"],
     },
-    handler = handle_memorize,
+    handler=handle_memorize,
 )
 
 
 RECALL_TOOL = ToolDef(
-    name = "recall",
-    description = (
+    name="recall",
+    description=(
         "Search your episodic memory — an archive of past conversations. "
         "ONLY use this when the user explicitly asks about a previous conversation "
         "or session (e.g. 'what did we talk about last time?', 'remember when we...', "
@@ -141,7 +150,7 @@ RECALL_TOOL = ToolDef(
         "Returns timestamped episodes matching the query (newest first). "
         "A single call is enough — do not call multiple times with different queries."
     ),
-    input_schema = {
+    input_schema={
         "type": "object",
         "properties": {
             "query": {
@@ -159,5 +168,5 @@ RECALL_TOOL = ToolDef(
         },
         "required": ["query"],
     },
-    handler = handle_recall,
+    handler=handle_recall,
 )

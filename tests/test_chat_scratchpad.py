@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from anton.core.session import ChatSession
+from anton.core.session import ChatSession, ChatSessionConfig
 from anton.core.tools.tool_defs import SCRATCHPAD_TOOL
 from anton.commands.session import handle_resume
 from anton.core.llm.provider import LLMResponse, StreamComplete, StreamToolResult, ToolCall, Usage
@@ -72,7 +72,7 @@ class TestScratchpadToolDefinition:
         mock_llm = AsyncMock()
         mock_llm.plan = AsyncMock(return_value=_text_response("Hi!"))
 
-        session = ChatSession(mock_llm, workspace=workspace)
+        session = ChatSession(ChatSessionConfig(llm_client=mock_llm, workspace=workspace))
         try:
             await session.turn("hello")
 
@@ -95,7 +95,7 @@ class TestScratchpadExecViaChat:
             ]
         )
 
-        session = ChatSession(mock_llm, workspace=workspace)
+        session = ChatSession(ChatSessionConfig(llm_client=mock_llm, workspace=workspace))
         try:
             reply = await session.turn("what is 7 * 6?")
 
@@ -122,7 +122,7 @@ class TestScratchpadViewViaChat:
             ]
         )
 
-        session = ChatSession(mock_llm, workspace=workspace)
+        session = ChatSession(ChatSessionConfig(llm_client=mock_llm, workspace=workspace))
         try:
             await session.turn("run and show")
 
@@ -151,7 +151,7 @@ class TestScratchpadRemoveViaChat:
             ]
         )
 
-        session = ChatSession(mock_llm, workspace=workspace)
+        session = ChatSession(ChatSessionConfig(llm_client=mock_llm, workspace=workspace))
         try:
             await session.turn("create and remove")
 
@@ -180,7 +180,7 @@ class TestScratchpadDumpViaChat:
             ]
         )
 
-        session = ChatSession(mock_llm, workspace=workspace)
+        session = ChatSession(ChatSessionConfig(llm_client=mock_llm, workspace=workspace))
         try:
             await session.turn("show me my work")
 
@@ -242,7 +242,7 @@ class TestScratchpadDumpStreaming:
 
         mock_llm.plan_stream = fake_plan_stream
 
-        session = ChatSession(mock_llm, workspace=workspace)
+        session = ChatSession(ChatSessionConfig(llm_client=mock_llm, workspace=workspace))
         try:
             events = []
             async for event in session.turn_stream("show work"):
@@ -285,7 +285,7 @@ class TestScratchpadStreaming:
 
         mock_llm.plan_stream = fake_plan_stream
 
-        session = ChatSession(mock_llm, workspace=workspace)
+        session = ChatSession(ChatSessionConfig(llm_client=mock_llm, workspace=workspace))
         try:
             events = []
             async for event in session.turn_stream("compute 99"):
@@ -317,7 +317,7 @@ class TestScratchpadInstallViaChat:
             ]
         )
 
-        session = ChatSession(mock_llm, workspace=workspace)
+        session = ChatSession(ChatSessionConfig(llm_client=mock_llm, workspace=workspace))
         try:
             reply = await session.turn("install cowsay")
 
@@ -341,7 +341,7 @@ class TestScratchpadInstallViaChat:
             ]
         )
 
-        session = ChatSession(mock_llm, workspace=workspace)
+        session = ChatSession(ChatSessionConfig(llm_client=mock_llm, workspace=workspace))
         try:
             await session.turn("install nothing")
 

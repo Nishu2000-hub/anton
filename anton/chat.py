@@ -17,7 +17,7 @@ from anton.clipboard import (
     parse_dropped_paths as _parse_dropped_paths,
     save_clipboard_image,
 )
-from anton.core.session import ChatSession
+from anton.core.session import ChatSession, ChatSessionConfig
 from anton.core.llm.provider import (
     TokenLimitExceeded,
     StreamComplete,
@@ -984,8 +984,8 @@ async def _chat_loop(
         if settings.coding_provider == "anthropic"
         else settings.openai_api_key
     ) or ""
-    session = ChatSession(
-        state["llm_client"],
+    session = ChatSession(ChatSessionConfig(
+        llm_client=state["llm_client"],
         self_awareness=self_awareness,
         cortex=cortex,
         episodic=episodic,
@@ -999,7 +999,7 @@ async def _chat_loop(
         session_id=current_session_id,
         proactive_dashboards=settings.proactive_dashboards,
         tools=[CONNECT_DATASOURCE_TOOL, PUBLISH_TOOL],
-    )
+    ))
 
     # Handle --resume flag at startup
     if resume:

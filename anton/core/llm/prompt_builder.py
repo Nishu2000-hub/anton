@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .prompts import (
-    BASE_VISUALIZATIONS_PROMPT, 
-    CHAT_SYSTEM_PROMPT, 
+    BASE_VISUALIZATIONS_PROMPT,
+    CHAT_SYSTEM_PROMPT,
     VISUALIZATIONS_MARKDOWN_OUTPUT_FORMAT_PROMPT,
     VISUALIZATIONS_HTML_OUTPUT_FORMAT_PROMPT,
 )
@@ -54,7 +54,9 @@ class ChatSystemPromptBuilder:
             else VISUALIZATIONS_MARKDOWN_OUTPUT_FORMAT_PROMPT
         )
         # The output-format prompt can reference `{output_path}`.
-        output_format = visualizations_output_format_prompt.format(output_path=output_path)
+        output_format = visualizations_output_format_prompt.format(
+            output_path=output_path
+        )
         return BASE_VISUALIZATIONS_PROMPT.format(output_format=output_format)
 
     def build(
@@ -100,4 +102,3 @@ class ChatSystemPromptBuilder:
 
 
 __all__ = ["ChatSystemPromptBuilder"]
-

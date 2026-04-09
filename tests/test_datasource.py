@@ -12,6 +12,7 @@ from rich.console import Console
 from anton.chat import (
     ChatSession,
 )
+from anton.core.session import ChatSessionConfig
 from anton.commands.datasource import (
     _PROMPT_RECONNECT_CANCEL,
     handle_add_custom_datasource,
@@ -149,7 +150,7 @@ def make_session():
         plan_response = MagicMock()
         plan_response.content = "UNKNOWN"
         mock_llm.plan = AsyncMock(return_value=plan_response)
-        session = ChatSession(mock_llm)
+        session = ChatSession(ChatSessionConfig(llm_client=mock_llm))
         session._scratchpads = AsyncMock()
         return session
 
