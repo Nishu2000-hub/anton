@@ -76,7 +76,7 @@ def memory_dirs(tmp_path):
 @pytest.fixture()
 def cortex(memory_dirs):
     global_dir, project_dir = memory_dirs
-    return Cortex(global_dir=global_dir, project_dir=project_dir, mode="autopilot")
+    return Cortex(global_hc=Hippocampus(global_dir), project_hc=Hippocampus(project_dir), mode="autopilot")
 
 
 class TestMemorizeTool:
