@@ -121,14 +121,18 @@ Do NOT add, modify, or summarize rules — return them verbatim.
         # 2. Global rules (with smart retrieval)
         global_rules = self.global_hc.recall_rules()
         if global_rules:
-            global_rules = await self._retrieve_relevant_rules(global_rules, user_message)
+            global_rules = await self._retrieve_relevant_rules(
+                global_rules, user_message
+            )
             if global_rules:
                 sections.append(f"## Your Memory — Global Rules\n{global_rules}")
 
         # 3. Project rules (with smart retrieval)
         project_rules = self.project_hc.recall_rules()
         if project_rules:
-            project_rules = await self._retrieve_relevant_rules(project_rules, user_message)
+            project_rules = await self._retrieve_relevant_rules(
+                project_rules, user_message
+            )
             if project_rules:
                 sections.append(f"## Your Memory — Project Rules\n{project_rules}")
 
@@ -202,10 +206,12 @@ Do NOT add, modify, or summarize rules — return them verbatim.
         try:
             response = await self._llm.code(
                 system=self._RULES_RETRIEVAL_PROMPT,
-                messages=[{
-                    "role": "user",
-                    "content": f"User message: {user_message}\n\nRules:\n{when_text}",
-                }],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"User message: {user_message}\n\nRules:\n{when_text}",
+                    }
+                ],
                 max_tokens=4096,
             )
             result = response.content.strip()
@@ -375,7 +381,9 @@ Do NOT add, modify, or summarize rules — return them verbatim.
             return
 
         content = path.read_text(encoding="utf-8")
-        entries = [ln.strip() for ln in content.splitlines() if ln.strip().startswith("- ")]
+        entries = [
+            ln.strip() for ln in content.splitlines() if ln.strip().startswith("- ")
+        ]
 
         if len(entries) < 8:
             return
@@ -397,9 +405,12 @@ Do NOT add, modify, or summarize rules — return them verbatim.
         # Rebuild the file
         if kind == "rules":
             # Preserve section structure
-            always = [e for e in kept if "always" in e.lower() or not any(
-                k in e.lower() for k in ("never", "when", "if ")
-            )]
+            always = [
+                e
+                for e in kept
+                if "always" in e.lower()
+                or not any(k in e.lower() for k in ("never", "when", "if "))
+            ]
             never = [e for e in kept if "never" in e.lower()]
             when_rules = [e for e in kept if "when" in e.lower() or "if " in e.lower()]
 
@@ -457,7 +468,8 @@ Do NOT add, modify, or summarize rules — return them verbatim.
                 key = fact.split(":")[0].strip().lower() if ":" in fact else ""
                 if key:
                     existing_entries = [
-                        e for e in existing_entries
+                        e
+                        for e in existing_entries
                         if not e.lower().startswith(key + ":")
                     ]
                 existing_entries.append(fact)

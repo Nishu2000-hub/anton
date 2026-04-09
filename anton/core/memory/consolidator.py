@@ -67,12 +67,16 @@ class Consolidator:
 
         # Check for cancellation markers in stderr
         for cell in cells:
-            if cell.stderr and ("cancelled" in cell.stderr.lower() or "killed" in cell.stderr.lower()):
+            if cell.stderr and (
+                "cancelled" in cell.stderr.lower() or "killed" in cell.stderr.lower()
+            ):
                 return True
 
         return False
 
-    async def replay_and_extract(self, cells: list[Cell], llm_client: LLMClient) -> list[Engram]:
+    async def replay_and_extract(
+        self, cells: list[Cell], llm_client: LLMClient
+    ) -> list[Engram]:
         """Replay the scratchpad session and extract lessons.
 
         Like SWS replay: compresses the full session into a compact summary,
@@ -144,14 +148,16 @@ class Consolidator:
             if confidence not in ("high", "medium", "low"):
                 confidence = "medium"
 
-            engrams.append(Engram(
-                text=item["text"],
-                kind=kind,
-                scope=scope,
-                confidence=confidence,
-                topic=item.get("topic", ""),
-                source="consolidation",
-            ))
+            engrams.append(
+                Engram(
+                    text=item["text"],
+                    kind=kind,
+                    scope=scope,
+                    confidence=confidence,
+                    topic=item.get("topic", ""),
+                    source="consolidation",
+                )
+            )
 
         # Cap extraction to prevent memory bloat from single sessions
         return engrams[:5]
