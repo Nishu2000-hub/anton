@@ -17,7 +17,7 @@ from anton.clipboard import (
     parse_dropped_paths as _parse_dropped_paths,
     save_clipboard_image,
 )
-from anton.core.session import ChatSession, TOKEN_STATUS_CACHE_TTL
+from anton.core.session import ChatSession
 from anton.core.llm.provider import (
     TokenLimitExceeded,
     StreamComplete,
@@ -912,7 +912,8 @@ async def _chat_loop(
 ) -> None:
     from anton.context.self_awareness import SelfAwarenessContext
     from anton.core.llm.client import LLMClient
-    from anton.memory.cortex import Cortex
+    from anton.core.memory.cortex import Cortex
+    from anton.core.memory.hippocampus import Hippocampus
     from anton.workspace import Workspace
 
     # Use a mutable container so closures always see the current client
@@ -940,8 +941,8 @@ async def _chat_loop(
     project_memory_dir = settings.workspace_path / ".anton" / "memory"
 
     cortex = Cortex(
-        global_dir=global_memory_dir,
-        project_dir=project_memory_dir,
+        global_hc=Hippocampus(global_memory_dir),
+        project_hc=Hippocampus(project_memory_dir),
         mode=settings.memory_mode,
         llm_client=state["llm_client"],
     )
@@ -1358,7 +1359,7 @@ async def _chat_loop(
                 if settings.minds_api_key and settings.minds_url:
                     #TODO: Lets check if this is best solution
                     now = time.monotonic()
-                    if last_token_status_checked_at is None or (now - last_token_status_checked_at) >= TOKEN_STATUS_CACHE_TTL:
+                    if last_token_status_checked_at is None or (now - last_token_status_checked_at) >= settings.token_status_cache_ttl:
                         last_token_status = check_minds_token_limits(
                             settings.minds_url.rstrip("/"),
                             settings.minds_api_key,
