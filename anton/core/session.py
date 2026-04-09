@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from anton.core.llm.prompt_builder import ChatSystemPromptBuilder
+from anton.core.llm.prompts import RESILIENCE_NUDGE
 from anton.core.llm.provider import (
     ContextOverflowError,
     StreamComplete,
@@ -15,7 +16,7 @@ from anton.core.llm.provider import (
     StreamToolResult,
     TokenLimitExceeded
 )
-from anton.scratchpad import ScratchpadManager
+from anton.core.backends.manager import ScratchpadManager
 from anton.core.tools.registry import ToolRegistry
 from anton.core.tools.tool_defs import SCRATCHPAD_TOOL, MEMORIZE_TOOL, RECALL_TOOL, ToolDef
 from anton.core.utils.scratchpad import prepare_scratchpad_exec, format_cell_result
@@ -24,65 +25,20 @@ from anton.utils.datasources import (
     build_datasource_context,
     scrub_credentials,
 )
+from anton.core.settings import CoreSettings
+
 
 if TYPE_CHECKING:
     from rich.console import Console
     from anton.context.self_awareness import SelfAwarenessContext
     from anton.chat_ui import EscapeWatcher
     from anton.core.llm.client import LLMClient
-    from anton.memory.cortex import Cortex
-    from anton.memory.episodes import EpisodicMemory
+    from anton.core.memory.cortex import Cortex
+    from anton.core.memory.episodes import EpisodicMemory
     from anton.memory.history_store import HistoryStore
     from anton.workspace import Workspace
 
 
-# TODO: Move to settings?
-_MAX_TOOL_ROUNDS = 25  # Hard limit on consecutive tool-call rounds per turn
-_MAX_CONTINUATIONS = 3  # Max times the verification loop can restart the tool loop
-_CONTEXT_PRESSURE_THRESHOLD = 0.7  # Trigger compaction when context is 70% full
-_MAX_CONSECUTIVE_ERRORS = 5  # Stop if the same tool fails this many times in a row
-_RESILIENCE_NUDGE_AT = 2  # Inject resilience nudge after this many consecutive errors
-_RESILIENCE_NUDGE = (
-    "\n\nSYSTEM: This tool has failed twice in a row. Before retrying the same approach or "
-    "asking the user for help, try a creative workaround — different headers/user-agent, "
-    "a public API, archive.org, an alternate library, or a completely different data source. "
-    "Only involve the user if the problem truly requires something only they can provide."
-)
-
-# TODO: Is this enough for now?
-TOKEN_STATUS_CACHE_TTL = 60.0
-
-
-def _apply_error_tracking(
-    result_text: str,
-    tool_name: str,
-    error_streak: dict[str, int],
-    resilience_nudged: set[str],
-) -> str:
-    """Track consecutive errors per tool and append nudge/circuit-breaker messages."""
-    is_error = any(
-        marker in result_text
-        for marker in ("[error]", "Task failed:", "failed", "timed out", "Rejected:")
-    )
-    if is_error:
-        error_streak[tool_name] = error_streak.get(tool_name, 0) + 1
-    else:
-        error_streak[tool_name] = 0
-        resilience_nudged.discard(tool_name)
-
-    streak = error_streak.get(tool_name, 0)
-    if streak >= _RESILIENCE_NUDGE_AT and tool_name not in resilience_nudged:
-        result_text += _RESILIENCE_NUDGE
-        resilience_nudged.add(tool_name)
-
-    if streak >= _MAX_CONSECUTIVE_ERRORS:
-        result_text += (
-            f"\n\nSYSTEM: The '{tool_name}' tool has failed {_MAX_CONSECUTIVE_ERRORS} times "
-            "in a row. Stop retrying this approach. Either try a completely different "
-            "strategy or tell the user what's going wrong so they can help."
-        )
-
-    return result_text
 
 
 class ChatSession:
@@ -92,6 +48,7 @@ class ChatSession:
         self,
         llm_client: LLMClient,
         *,
+        settings: CoreSettings | None = None,
         self_awareness: SelfAwarenessContext | None = None,
         cortex: Cortex | None = None,
         episodic: EpisodicMemory | None = None,
@@ -108,6 +65,13 @@ class ChatSession:
         output_dir: str = "",
         tools: list[ToolDef] | None = None,
     ) -> None:
+        s = settings or CoreSettings()
+        self._max_tool_rounds = s.max_tool_rounds
+        self._max_continuations = s.max_continuations
+        self._context_pressure_threshold = s.context_pressure_threshold
+        self._max_consecutive_errors = s.max_consecutive_errors
+        self._resilience_nudge_at = s.resilience_nudge_at
+        self._token_status_cache_ttl = s.token_status_cache_ttl
         self._llm = llm_client
         self._self_awareness = self_awareness
         self._cortex = cortex
@@ -142,6 +106,38 @@ class ChatSession:
     @property
     def history(self) -> list[dict]:
         return self._history
+
+    def _apply_error_tracking(
+        self,
+        result_text: str,
+        tool_name: str,
+        error_streak: dict[str, int],
+        resilience_nudged: set[str],
+    ) -> str:
+        """Track consecutive errors per tool and append nudge/circuit-breaker messages."""
+        is_error = any(
+            marker in result_text
+            for marker in ("[error]", "Task failed:", "failed", "timed out", "Rejected:")
+        )
+        if is_error:
+            error_streak[tool_name] = error_streak.get(tool_name, 0) + 1
+        else:
+            error_streak[tool_name] = 0
+            resilience_nudged.discard(tool_name)
+
+        streak = error_streak.get(tool_name, 0)
+        if streak >= self._resilience_nudge_at and tool_name not in resilience_nudged:
+            result_text += RESILIENCE_NUDGE
+            resilience_nudged.add(tool_name)
+
+        if streak >= self._max_consecutive_errors:
+            result_text += (
+                f"\n\nSYSTEM: The '{tool_name}' tool has failed {self._max_consecutive_errors} times "
+                "in a row. Stop retrying this approach. Either try a completely different "
+                "strategy or tell the user what's going wrong so they can help."
+            )
+
+        return result_text
 
     def repair_history(self) -> None:
         """Fix dangling tool_use blocks left by mid-stream cancellation.
@@ -287,7 +283,7 @@ class ChatSession:
 
     def _build_core_tools(self) -> None:
         scratchpad_tool = SCRATCHPAD_TOOL
-        pkg_list = self._scratchpads._available_packages
+        pkg_list = self._scratchpads.available_packages
         if pkg_list:
             notable = sorted(p for p in pkg_list if p.lower() in self._NOTABLE_PACKAGES)
             if notable:
@@ -424,7 +420,7 @@ class ChatSession:
     def _compact_scratchpads(self) -> bool:
         """Compact all active scratchpads. Returns True if any were compacted."""
         compacted = False
-        for pad in self._scratchpads._pads.values():
+        for pad in self._scratchpads.pads.values():
             if pad._compact_cells():
                 compacted = True
         return compacted
@@ -452,7 +448,7 @@ class ChatSession:
             )
 
         # Proactive compaction
-        if response.usage.context_pressure > _CONTEXT_PRESSURE_THRESHOLD:
+        if response.usage.context_pressure > self._context_pressure_threshold:
             await self._summarize_history()
             self._compact_scratchpads()
 
@@ -463,7 +459,7 @@ class ChatSession:
 
         while response.tool_calls:
             tool_round += 1
-            if tool_round > _MAX_TOOL_ROUNDS:
+            if tool_round > self._max_tool_rounds:
                 self._history.append(
                     {"role": "assistant", "content": response.content or ""}
                 )
@@ -471,7 +467,7 @@ class ChatSession:
                     {
                         "role": "user",
                         "content": (
-                            f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
+                            f"SYSTEM: You have used {self._max_tool_rounds} tool-call rounds on this turn. "
                             "Pause here. Summarize what you have accomplished so far and what remains. "
                             "If you believe you are on a good track and can finish the task with more steps, "
                             "tell the user and ask if they'd like you to continue. "
@@ -511,7 +507,7 @@ class ChatSession:
                     result_text = f"Tool '{tc.name}' failed: {exc}"
 
                 result_text = scrub_credentials(result_text)
-                result_text = _apply_error_tracking(
+                result_text = self._apply_error_tracking(
                     result_text,
                     tc.name,
                     error_streak,
@@ -545,7 +541,7 @@ class ChatSession:
                 )
 
             # Proactive compaction during tool loop
-            if response.usage.context_pressure > _CONTEXT_PRESSURE_THRESHOLD:
+            if response.usage.context_pressure > self._context_pressure_threshold:
                 await self._summarize_history()
                 self._compact_scratchpads()
 
@@ -746,7 +742,7 @@ class ChatSession:
         # Proactive compaction
         if (
             not _compacted_this_turn
-            and llm_response.usage.context_pressure > _CONTEXT_PRESSURE_THRESHOLD
+            and llm_response.usage.context_pressure > self._context_pressure_threshold
         ):
             await self._summarize_history()
             self._compact_scratchpads()
@@ -768,7 +764,7 @@ class ChatSession:
 
             while llm_response.tool_calls:
                 tool_round += 1
-                if tool_round > _MAX_TOOL_ROUNDS:
+                if tool_round > self._max_tool_rounds:
                     _max_rounds_hit = True
                     self._history.append(
                         {"role": "assistant", "content": llm_response.content or ""}
@@ -777,7 +773,7 @@ class ChatSession:
                         {
                             "role": "user",
                             "content": (
-                                f"SYSTEM: You have used {_MAX_TOOL_ROUNDS} tool-call rounds on this turn. "
+                                f"SYSTEM: You have used {self._max_tool_rounds} tool-call rounds on this turn. "
                                 "Pause here. Summarize what you have accomplished so far and what remains. "
                                 "If you believe you are on a good track and can finish the task with more steps, "
                                 "tell the user and ask if they'd like you to continue. "
@@ -844,7 +840,7 @@ class ChatSession:
                                 import time as _time
 
                                 _sp_t0 = _time.monotonic()
-                                from anton.scratchpad import Cell
+                                from anton.core.backends.base import Cell
 
                                 cell = None
                                 async for item in pad.execute_streaming(
@@ -852,8 +848,10 @@ class ChatSession:
                                     description=description,
                                     estimated_time=estimated_time,
                                     estimated_seconds=estimated_seconds,
-                                    cancel_event=self._cancel_event,
                                 ):
+                                    if self._cancel_event.is_set():
+                                        await pad.cancel()
+                                        break
                                     if isinstance(item, str):
                                         yield StreamTaskProgress(
                                             phase="scratchpad", message=item
@@ -922,7 +920,7 @@ class ChatSession:
                             tool=tc.name,
                         )
                     result_text = scrub_credentials(result_text)
-                    result_text = _apply_error_tracking(
+                    result_text = self._apply_error_tracking(
                         result_text, tc.name, error_streak, resilience_nudged
                     )
                     tool_results.append(
@@ -1022,7 +1020,7 @@ class ChatSession:
                 if (
                     not _compacted_this_turn
                     and llm_response.usage.context_pressure
-                    > _CONTEXT_PRESSURE_THRESHOLD
+                    > self._context_pressure_threshold
                 ):
                     await self._summarize_history()
                     self._compact_scratchpads()
@@ -1041,7 +1039,7 @@ class ChatSession:
             reply = llm_response.content or ""
             self._history.append({"role": "assistant", "content": reply})
 
-            if continuation >= _MAX_CONTINUATIONS:
+            if continuation >= self._max_continuations:
                 # Budget exhausted — ask LLM to diagnose and present to user
                 self._history.append(
                     {
@@ -1134,7 +1132,7 @@ class ChatSession:
                     "role": "user",
                     "content": (
                         f"SYSTEM: Task verification determined this task is not yet complete "
-                        f"(attempt {continuation}/{_MAX_CONTINUATIONS}).\n"
+                        f"(attempt {continuation}/{self._max_continuations}).\n"
                         f"Verifier assessment: {reason}\n\n"
                         "Continue working on the original request. Pick up where you left off "
                         "and finish the remaining work. Do not repeat work already done."
@@ -1143,7 +1141,7 @@ class ChatSession:
             )
             yield StreamTaskProgress(
                 phase="analyzing",
-                message=f"Task incomplete — continuing ({continuation}/{_MAX_CONTINUATIONS})...",
+                message=f"Task incomplete — continuing ({continuation}/{self._max_continuations})...",
             )
 
             # Re-enter tool loop: get next LLM response with tools available
@@ -1173,17 +1171,17 @@ class ChatSession:
 
     def _maybe_consolidate_scratchpads(self) -> None:
         """Check if any scratchpad sessions warrant consolidation and fire it off."""
-        from anton.memory.consolidator import Consolidator
+        from anton.core.memory.consolidator import Consolidator
 
         consolidator = Consolidator()
-        for pad in self._scratchpads._pads.values():
+        for pad in self._scratchpads.pads.values():
             cells = list(pad.cells)
             if consolidator.should_replay(cells):
                 asyncio.create_task(self._consolidate(cells))
 
     async def _consolidate(self, cells: list) -> None:
         """Run offline consolidation on a completed scratchpad session."""
-        from anton.memory.consolidator import Consolidator
+        from anton.core.memory.consolidator import Consolidator
 
         consolidator = Consolidator()
         engrams = await consolidator.replay_and_extract(cells, self._llm)

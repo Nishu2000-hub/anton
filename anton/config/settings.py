@@ -5,6 +5,8 @@ from pathlib import Path
 from pydantic import PrivateAttr, field_validator
 from pydantic_settings import BaseSettings
 
+from anton.core.settings import CoreSettings
+
 
 def _build_env_files() -> list[str]:
     """Build .env loading chain: cwd/.env -> .anton/.env -> ~/.anton/.env"""
@@ -21,7 +23,7 @@ def _build_env_files() -> list[str]:
 _ENV_FILES = _build_env_files()
 
 
-class AntonSettings(BaseSettings):
+class AntonSettings(CoreSettings):
     model_config = {"env_prefix": "ANTON_", "env_file": _ENV_FILES, "env_file_encoding": "utf-8", "extra": "ignore"}
 
     planning_provider: str = "anthropic"

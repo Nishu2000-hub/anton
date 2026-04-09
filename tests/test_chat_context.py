@@ -13,10 +13,10 @@ from anton.minds_client import describe_minds_connection_error
 from anton.config.settings import AntonSettings
 from anton.core.tools.tool_defs import MEMORIZE_TOOL
 from anton.context.self_awareness import SelfAwarenessContext
-from anton.llm.provider import LLMResponse, ToolCall, Usage
+from anton.core.llm.provider import LLMResponse, ToolCall, Usage
 from anton.workspace import Workspace
-from anton.memory.cortex import Cortex
-from anton.memory.hippocampus import Hippocampus
+from anton.core.memory.cortex import Cortex
+from anton.core.memory.hippocampus import Hippocampus
 
 
 def _text_response(text: str) -> LLMResponse:
@@ -76,7 +76,7 @@ def memory_dirs(tmp_path):
 @pytest.fixture()
 def cortex(memory_dirs):
     global_dir, project_dir = memory_dirs
-    return Cortex(global_dir=global_dir, project_dir=project_dir, mode="autopilot")
+    return Cortex(global_hc=Hippocampus(global_dir), project_hc=Hippocampus(project_dir), mode="autopilot")
 
 
 class TestMemorizeTool:

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from anton.chat import ChatSession
-from anton.llm.provider import (
+from anton.core.llm.provider import (
     ContextOverflowError,
     LLMResponse,
     StreamComplete,

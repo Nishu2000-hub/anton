@@ -13,7 +13,7 @@ systems to provide coherent context. The Cortex class mirrors both:
   - encode() → executive decision to encode (directing the hippocampus)
   - encoding_gate() → encoding gate modulated by the memory mode
 
-The Cortex coordinates two Hippocampus instances (global + project scope),
+The Cortex coordinates two HippocampusProtocol instances (global + project scope),
 like how the PFC coordinates retrieval from multiple brain memory systems.
 """
 
@@ -23,7 +23,8 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from anton.memory.hippocampus import Engram, Hippocampus
+from anton.core.memory.base import HippocampusProtocol
+from anton.core.memory.hippocampus import Engram, Hippocampus
 
 if TYPE_CHECKING:
     from anton.core.llm.client import LLMClient
@@ -64,28 +65,28 @@ Be conservative — when in doubt, keep the entry.
 class Cortex:
     """Executive coordinator for Anton's memory systems.
 
-    Manages two Hippocampus instances (global + project scope), decides what
+    Manages two HippocampusProtocol instances (global + project scope), decides what
     memories to load into working memory (the context window), and gates
     encoding based on the current memory mode (the neuromodulatory setting).
     """
 
     def __init__(
         self,
-        global_dir: Path,
-        project_dir: Path,
+        global_hc: HippocampusProtocol,
+        project_hc: HippocampusProtocol,
         mode: str = "autopilot",
         llm_client: LLMClient | None = None,
     ) -> None:
         """Initialize the executive with two hippocampal stores.
 
         Args:
-            global_dir: Path to ~/.anton/memory/ (cross-project memories)
-            project_dir: Path to <project>/.anton/memory/ (project-specific)
+            global_hc: Memory store for cross-project memories (global scope)
+            project_hc: Memory store for project-specific memories
             mode: Memory mode — autopilot|copilot|off (encoding gate)
             llm_client: For LLM-assisted operations (profile extraction, compaction)
         """
-        self.global_hc = Hippocampus(global_dir)
-        self.project_hc = Hippocampus(project_dir)
+        self.global_hc = global_hc
+        self.project_hc = project_hc
         self.mode = mode
         self._llm = llm_client
         self._turn_count = 0
@@ -120,14 +121,18 @@ Do NOT add, modify, or summarize rules — return them verbatim.
         # 2. Global rules (with smart retrieval)
         global_rules = self.global_hc.recall_rules()
         if global_rules:
-            global_rules = await self._retrieve_relevant_rules(global_rules, user_message)
+            global_rules = await self._retrieve_relevant_rules(
+                global_rules, user_message
+            )
             if global_rules:
                 sections.append(f"## Your Memory — Global Rules\n{global_rules}")
 
         # 3. Project rules (with smart retrieval)
         project_rules = self.project_hc.recall_rules()
         if project_rules:
-            project_rules = await self._retrieve_relevant_rules(project_rules, user_message)
+            project_rules = await self._retrieve_relevant_rules(
+                project_rules, user_message
+            )
             if project_rules:
                 sections.append(f"## Your Memory — Project Rules\n{project_rules}")
 
@@ -201,10 +206,12 @@ Do NOT add, modify, or summarize rules — return them verbatim.
         try:
             response = await self._llm.code(
                 system=self._RULES_RETRIEVAL_PROMPT,
-                messages=[{
-                    "role": "user",
-                    "content": f"User message: {user_message}\n\nRules:\n{when_text}",
-                }],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"User message: {user_message}\n\nRules:\n{when_text}",
+                    }
+                ],
                 max_tokens=4096,
             )
             result = response.content.strip()
@@ -333,6 +340,8 @@ Do NOT add, modify, or summarize rules — return them verbatim.
             return
 
         for hc in (self.global_hc, self.project_hc):
+            if not isinstance(hc, Hippocampus):
+                continue  # compaction is file-specific; non-file backends skip
             if hc.entry_count() > self._COMPACTION_THRESHOLD:
                 await self._compact_file(hc, hc._lessons_path, "lesson")
                 await self._compact_file(hc, hc._rules_path, "rules")
@@ -346,6 +355,8 @@ Do NOT add, modify, or summarize rules — return them verbatim.
         if self._llm is None:
             return
         for hc in (self.global_hc, self.project_hc):
+            if not isinstance(hc, Hippocampus):
+                continue  # compaction is file-specific; non-file backends skip
             await self._compact_file(hc, hc._lessons_path, "lesson")
             await self._compact_file(hc, hc._rules_path, "rules")
 
@@ -370,7 +381,9 @@ Do NOT add, modify, or summarize rules — return them verbatim.
             return
 
         content = path.read_text(encoding="utf-8")
-        entries = [ln.strip() for ln in content.splitlines() if ln.strip().startswith("- ")]
+        entries = [
+            ln.strip() for ln in content.splitlines() if ln.strip().startswith("- ")
+        ]
 
         if len(entries) < 8:
             return
@@ -392,9 +405,12 @@ Do NOT add, modify, or summarize rules — return them verbatim.
         # Rebuild the file
         if kind == "rules":
             # Preserve section structure
-            always = [e for e in kept if "always" in e.lower() or not any(
-                k in e.lower() for k in ("never", "when", "if ")
-            )]
+            always = [
+                e
+                for e in kept
+                if "always" in e.lower()
+                or not any(k in e.lower() for k in ("never", "when", "if "))
+            ]
             never = [e for e in kept if "never" in e.lower()]
             when_rules = [e for e in kept if "when" in e.lower() or "if " in e.lower()]
 
@@ -452,7 +468,8 @@ Do NOT add, modify, or summarize rules — return them verbatim.
                 key = fact.split(":")[0].strip().lower() if ":" in fact else ""
                 if key:
                     existing_entries = [
-                        e for e in existing_entries
+                        e
+                        for e in existing_entries
                         if not e.lower().startswith(key + ":")
                     ]
                 existing_entries.append(fact)

@@ -8,7 +8,7 @@ import pytest
 from anton.core.session import ChatSession
 from anton.core.tools.tool_defs import SCRATCHPAD_TOOL
 from anton.commands.session import handle_resume
-from anton.llm.provider import LLMResponse, StreamComplete, StreamToolResult, ToolCall, Usage
+from anton.core.llm.provider import LLMResponse, StreamComplete, StreamToolResult, ToolCall, Usage
 
 
 @pytest.fixture()

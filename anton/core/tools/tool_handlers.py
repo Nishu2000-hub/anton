@@ -38,7 +38,7 @@ async def handle_memorize(session: ChatSession, tc_input: dict) -> str:
     if session._cortex.mode == "off":
         return "Memory encoding is disabled. Change memory mode via /setup to enable."
 
-    from anton.memory.hippocampus import Engram
+    from anton.core.memory.hippocampus import Engram
 
     raw_entries = tc_input.get("entries", [])
     if not raw_entries:
@@ -109,13 +109,13 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
         return format_cell_result(cell)
 
     elif action == "view":
-        pad = session._scratchpads._pads.get(name)
+        pad = session._scratchpads.pads.get(name)
         if pad is None:
             return f"No scratchpad named '{name}'."
         return pad.view()
 
     elif action == "reset":
-        pad = session._scratchpads._pads.get(name)
+        pad = session._scratchpads.pads.get(name)
         if pad is None:
             return f"No scratchpad named '{name}'."
         await pad.reset()
@@ -125,7 +125,7 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
         return await session._scratchpads.remove(name)
 
     elif action == "dump":
-        pad = session._scratchpads._pads.get(name)
+        pad = session._scratchpads.pads.get(name)
         if pad is None:
             return f"No scratchpad named '{name}'."
         return pad.render_notebook()
