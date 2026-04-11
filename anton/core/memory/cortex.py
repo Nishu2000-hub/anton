@@ -19,9 +19,10 @@ like how the PFC coordinates retrieval from multiple brain memory systems.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from pydantic import BaseModel, Field
 
 from anton.core.memory.base import HippocampusProtocol
 from anton.core.memory.hippocampus import Engram, Hippocampus
@@ -30,20 +31,61 @@ if TYPE_CHECKING:
     from anton.core.llm.client import LLMClient
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Pydantic schemas — used by LLMClient.generate_object
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _IdentityFacts(BaseModel):
+    """Result of the identity-extraction LLM call.
+
+    Each fact is a concise statement about the user (name, timezone,
+    expertise, preferences, tools). Empty list when nothing relevant
+    is found in the message.
+    """
+
+    facts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Identity facts extracted from the user message. Each fact "
+            "is a concise statement about the user. Examples: "
+            "'Name: Jorge', 'Timezone: PST', 'Prefers dark mode', "
+            "'Uses uv over pip'. Only extract facts that are clearly "
+            "about the user's identity, preferences, or working style. "
+            "Ignore transient conversation details. Return an empty list "
+            "if nothing identity-relevant is found."
+        ),
+    )
+
+
+class _CompactionResult(BaseModel):
+    """Result of the memory-compaction LLM call.
+
+    Returns the deduplicated entries to keep, plus optional metadata
+    about what was merged and pruned (purely for logging — the cortex
+    only acts on `kept`).
+    """
+
+    kept: list[str] = Field(
+        ...,
+        description=(
+            "Entry strings to keep after compaction. Preserve the "
+            "trailing `<!-- ... -->` metadata comment on each entry "
+            "exactly as it appears in the input."
+        ),
+    )
+    merged: list[str] = Field(
+        default_factory=list,
+        description="Strings describing what was merged (for logging).",
+    )
+    pruned: list[str] = Field(
+        default_factory=list,
+        description="Strings describing what was removed and why (for logging).",
+    )
+
+
 _IDENTITY_EXTRACT_PROMPT = """\
-Extract identity facts from this user message. Return a JSON array of strings,
-each a concise fact about the user (name, timezone, expertise, preferences, tools).
-
-If no identity-relevant information is found, return [].
-
-Examples of identity facts:
-- "Name: Jorge"
-- "Timezone: PST"
-- "Prefers dark mode"
-- "Uses uv over pip"
-
-Only extract facts that are clearly about the user's identity, preferences,
-or working style. Ignore transient conversation details.
+Extract identity facts from this user message — concise statements about the user (name, timezone, expertise, preferences, tools). Only extract facts that are clearly about the user's identity, preferences, or working style. Ignore transient conversation details. Return an empty list if nothing identity-relevant is found.
 """
 
 _COMPACTION_PROMPT = """\
@@ -53,12 +95,7 @@ You are a memory compaction system. Review these memory entries and:
 3. Remove entries that are superseded by newer, more specific entries
 4. Keep all unique, useful entries
 
-Return a JSON object with:
-- "kept": array of entry strings to keep — preserve the trailing `<!-- ... -->` metadata comment on each entry exactly as it appears
-- "merged": array of strings describing what was merged
-- "pruned": array of strings describing what was removed and why
-
-Be conservative — when in doubt, keep the entry.
+Be conservative — when in doubt, keep the entry. Preserve the trailing `<!-- ... -->` metadata comment on each kept entry exactly as it appears.
 """
 
 
@@ -389,13 +426,13 @@ Do NOT add, modify, or summarize rules — return them verbatim.
             return
 
         try:
-            response = await self._llm.code(
+            result: _CompactionResult = await self._llm.generate_object_code(
+                _CompactionResult,
                 system=_COMPACTION_PROMPT,
                 messages=[{"role": "user", "content": "\n".join(entries)}],
                 max_tokens=4096,
             )
-            result = json.loads(response.content)
-            kept = result.get("kept", entries)
+            kept = result.kept or entries
         except Exception:
             return  # Don't corrupt memory on failure
 
@@ -439,13 +476,14 @@ Do NOT add, modify, or summarize rules — return them verbatim.
             return
 
         try:
-            response = await self._llm.code(
+            result: _IdentityFacts = await self._llm.generate_object_code(
+                _IdentityFacts,
                 system=_IDENTITY_EXTRACT_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
                 max_tokens=512,
             )
-            facts = json.loads(response.content)
-            if not isinstance(facts, list) or not facts:
+            facts = result.facts
+            if not facts:
                 return
         except Exception:
             return

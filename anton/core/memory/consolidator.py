@@ -22,8 +22,9 @@ Like sleep, consolidation is:
 
 from __future__ import annotations
 
-import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import BaseModel, Field
 
 from anton.core.llm.prompts import CONSOLIDATION_PROMPT
 from anton.core.memory.hippocampus import Engram
@@ -31,6 +32,60 @@ from anton.core.memory.hippocampus import Engram
 if TYPE_CHECKING:
     from anton.core.llm.client import LLMClient
     from anton.core.backends.base import Cell
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM-facing schema (Pydantic) — used by LLMClient.generate_object_code
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _ConsolidatedLesson(BaseModel):
+    """One engram extracted from a scratchpad replay."""
+
+    text: str = Field(
+        ...,
+        description=(
+            "The lesson itself — what a future agent should know to do "
+            "this kind of task better. Concrete and actionable."
+        ),
+    )
+    kind: Literal["always", "never", "when", "lesson"] = Field(
+        default="lesson",
+        description=(
+            "Engram type. 'always'/'never' = behavioral rules, "
+            "'when' = conditional rule, 'lesson' = semantic fact."
+        ),
+    )
+    scope: Literal["global", "project"] = Field(
+        default="project",
+        description=(
+            "'global' = applies across all projects, 'project' = "
+            "specific to this codebase. Default project."
+        ),
+    )
+    confidence: Literal["high", "medium", "low"] = Field(
+        default="medium",
+        description=(
+            "How confident you are this lesson generalizes. 'high' "
+            "auto-encodes; 'medium'/'low' may require user confirmation."
+        ),
+    )
+    topic: str = Field(
+        default="",
+        description="Optional topic tag for retrieval grouping.",
+    )
+
+
+class _ConsolidatedLessons(BaseModel):
+    """Wrapper for the list of lessons returned by the consolidator."""
+
+    items: list[_ConsolidatedLesson] = Field(
+        default_factory=list,
+        description=(
+            "Lessons extracted from the scratchpad replay. Empty list "
+            "if nothing worth remembering. Cap at ~5 — be selective."
+        ),
+    )
 
 
 class Consolidator:
@@ -110,51 +165,27 @@ class Consolidator:
         session_summary = "\n".join(summary_lines)
 
         try:
-            response = await llm_client.code(
+            result: _ConsolidatedLessons = await llm_client.generate_object_code(
+                _ConsolidatedLessons,
                 system=CONSOLIDATION_PROMPT,
                 messages=[{"role": "user", "content": session_summary}],
                 max_tokens=2048,
             )
-
-            raw = response.content.strip()
-            # Handle markdown code fences
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
-                raw = raw.strip()
-
-            items = json.loads(raw)
-            if not isinstance(items, list):
-                return []
-
         except Exception:
             return []
 
         engrams: list[Engram] = []
-        for item in items:
-            if not isinstance(item, dict) or "text" not in item:
+        for item in result.items:
+            text = (item.text or "").strip()
+            if not text:
                 continue
-
-            kind = item.get("kind", "lesson")
-            if kind not in ("always", "never", "when", "lesson"):
-                kind = "lesson"
-
-            scope = item.get("scope", "project")
-            if scope not in ("global", "project"):
-                scope = "project"
-
-            confidence = item.get("confidence", "medium")
-            if confidence not in ("high", "medium", "low"):
-                confidence = "medium"
-
             engrams.append(
                 Engram(
-                    text=item["text"],
-                    kind=kind,
-                    scope=scope,
-                    confidence=confidence,
-                    topic=item.get("topic", ""),
+                    text=text,
+                    kind=item.kind,
+                    scope=item.scope,
+                    confidence=item.confidence,
+                    topic=item.topic,
                     source="consolidation",
                 )
             )

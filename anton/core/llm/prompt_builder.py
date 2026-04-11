@@ -11,6 +11,7 @@ from .prompts import (
 )
 
 if TYPE_CHECKING:
+    from anton.core.memory.skills import SkillStore
     from anton.core.tools.tool_defs import ToolDef
 
 
@@ -42,6 +43,51 @@ class ChatSystemPromptBuilder:
 
         return "\n\n".join(chunks)
 
+    def _build_procedural_memory_section(
+        self, skill_store: "SkillStore | None"
+    ) -> str:
+        """Build the '## Procedural memory' section listing available skills.
+
+        Lists each skill as `- label: when_to_use` (one line) plus a short
+        instruction telling the LLM to call `recall_skill(label)` to load
+        the full procedure. Returns an empty string if no store is wired
+        or no skills are saved — the caller skips the section entirely.
+        """
+        if skill_store is None:
+            return ""
+        try:
+            summaries = skill_store.list_summaries()
+        except Exception:
+            return ""
+        if not summaries:
+            return ""
+
+        lines: list[str] = [
+            "",
+            "",
+            "## Procedural memory (skills available)",
+            "",
+            (
+                "These are reusable procedures you've previously refined for "
+                "recurring tasks. When the user's request matches one of "
+                "them, call `recall_skill(label)` to load the full step-by-"
+                "step procedure into your context. You may recall multiple "
+                "skills if the task spans several. If none apply, proceed "
+                "with normal reasoning."
+            ),
+            "",
+        ]
+        for s in summaries:
+            label = s.get("label", "")
+            when = s.get("when_to_use", "").strip()
+            if not label:
+                continue
+            if when:
+                lines.append(f"- `{label}` — {when}")
+            else:
+                lines.append(f"- `{label}`")
+        return "\n".join(lines)
+
     def _build_visualizations_section(
         self,
         *,
@@ -71,6 +117,7 @@ class ChatSystemPromptBuilder:
         project_context: str = "",
         self_awareness_context: str = "",
         datasource_context: str = "",
+        skill_store: "SkillStore | None" = None,
     ) -> str:
         output_path = f"{Path(str(output_dir)).as_posix().rstrip('/')}/"
 
@@ -97,6 +144,10 @@ class ChatSystemPromptBuilder:
             prompt += self_awareness_context
         if datasource_context:
             prompt += datasource_context
+
+        procedural_memory = self._build_procedural_memory_section(skill_store)
+        if procedural_memory:
+            prompt += procedural_memory
 
         return prompt
 

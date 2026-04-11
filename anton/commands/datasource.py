@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.padding import Padding
@@ -32,6 +33,81 @@ from anton.core.backends.manager import ScratchpadManager
 
 if TYPE_CHECKING:
     from anton.chat import ChatSession
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM-facing schema (Pydantic) for handle_add_custom_datasource
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _CustomDatasourceField(BaseModel):
+    """One credential field in a custom-datasource spec."""
+
+    name: str = Field(
+        ...,
+        description=(
+            "snake_case field name (e.g. 'host', 'api_key'). Must be a "
+            "valid Python identifier; this becomes both the on-disk key "
+            "and the env var suffix (DS_<NAME>)."
+        ),
+    )
+    value: str = Field(
+        default="",
+        description=(
+            "Inline value if the user already provided one in their "
+            "description, otherwise empty string."
+        ),
+    )
+    secret: bool = Field(
+        default=False,
+        description=(
+            "True if the field is sensitive (passwords, API keys, "
+            "tokens) — affects how it's stored and prompted for."
+        ),
+    )
+    required: bool = Field(
+        default=True,
+        description="True if the connection cannot be tested without this field.",
+    )
+    description: str = Field(
+        default="",
+        description=(
+            "One-line description shown to the user when prompting "
+            "for this field."
+        ),
+    )
+
+
+class _CustomDatasourceSpec(BaseModel):
+    """Structured output of the LLM call in handle_add_custom_datasource."""
+
+    display_name: str = Field(
+        ...,
+        description="Human-readable name for the service (e.g. 'GitHub API').",
+    )
+    pip: str = Field(
+        default="",
+        description=(
+            "pip-installable package name (or space-separated names) "
+            "needed to interact with this service. Empty string if no "
+            "extra package is required (e.g. plain HTTPS via stdlib)."
+        ),
+    )
+    test_snippet: str = Field(
+        default="",
+        description=(
+            "Python code that tests the connection using os.environ "
+            "vars DS_FIELDNAME (uppercase field name with DS_ prefix) "
+            "and prints 'ok' on success. Empty string if untestable."
+        ),
+    )
+    fields: list[_CustomDatasourceField] = Field(
+        default_factory=list,
+        description=(
+            "Credential fields the user will need to provide. List in "
+            "the order they should be prompted."
+        ),
+    )
 
 _PROMPT_RECONNECT_CANCEL = "(reconnect/cancel)"
 
@@ -323,28 +399,18 @@ async def handle_add_custom_datasource(
     else:
         llm_prompt += " Determine the standard authentication fields for this service."
     llm_prompt += (
-        "\n\nReturn ONLY valid JSON (no markdown fences, no commentary):\n"
-        '{"display_name":"Human-readable name","pip":"pip-package or empty string",'
-        '"test_snippet":"python code that tests the connection using os.environ vars DS_FIELDNAME (uppercase field name with DS_ prefix) and prints ok on success, or empty string if untestable",'
-        '"fields":[{"name":"snake_case_name","value":"value if given inline else empty",'
-        '"secret":true or false,"required":true or false,"description":"what it is"}]}'
+        "\n\nReturn the connection spec following the schema you've been given. "
+        "For test_snippet, write Python that uses os.environ['DS_<FIELDNAME>'] "
+        "vars (uppercase, DS_ prefix) and prints 'ok' on success."
     )
 
     try:
-        response = await session._llm.plan(
+        spec: _CustomDatasourceSpec = await session._llm.generate_object(
+            _CustomDatasourceSpec,
             system="You are a data source connection expert.",
-            messages=[
-                {
-                    "role": "user",
-                    "content": llm_prompt,
-                }
-            ],
+            messages=[{"role": "user", "content": llm_prompt}],
             max_tokens=1024,
         )
-        text = response.content.strip()
-        # Keep
-        text = re.sub(r"^```[^\n]*\n|```\s*$", "", text, flags=re.MULTILINE).strip()
-        data = json.loads(text)
     except Exception:
         console.print(
             "[anton.warning]        Couldn't identify connection details. Try again.[/]"
@@ -352,18 +418,17 @@ async def handle_add_custom_datasource(
         console.print()
         return None
 
-    test_snippet = str(data.get("test_snippet", "")).strip()
-    raw_fields = data.get("fields") or []
+    test_snippet = spec.test_snippet.strip()
     fields: list[DatasourceField] = []
-    for f in raw_fields:
-        if not isinstance(f, dict) or not f.get("name"):
+    for f in spec.fields:
+        if not f.name:
             continue
         fields.append(
             DatasourceField(
-                name=f["name"],
-                required=bool(f.get("required", True)),
-                secret=bool(f.get("secret", False)),
-                description=str(f.get("description", "")),
+                name=f.name,
+                required=f.required,
+                secret=f.secret,
+                description=f.description,
             )
         )
 
@@ -372,15 +437,15 @@ async def handle_add_custom_datasource(
         console.print()
         return None
 
-    display_name = str(data.get("display_name", name))
-    pip_pkg = str(data.get("pip", ""))
+    display_name = spec.display_name or name
+    pip_pkg = spec.pip
 
     # Show summary
     console.print()
     console.print("      [bold]── What I'll save ──────────────────────────[/]")
     credentials: dict[str, str] = {}
-    for f, raw in zip(fields, raw_fields):
-        inline_value = str(raw.get("value", "")).strip()
+    for f, raw in zip(fields, spec.fields):
+        inline_value = (raw.value or "").strip()
         if f.secret and inline_value:
             console.print(
                 f"        • [bold]{f.name:<14}[/] (secret — provided, stored securely)"
@@ -410,10 +475,10 @@ async def handle_add_custom_datasource(
         )
 
     # Prompt for any secret fields not provided inline
-    for f, raw in zip(fields, raw_fields):
+    for f, raw in zip(fields, spec.fields):
         if not f.secret:
             continue
-        if str(raw.get("value", "")).strip():
+        if (raw.value or "").strip():
             continue
         value = await prompt_or_cancel(f"(anton) {f.name}", password=True)
         if value is None:
@@ -422,7 +487,7 @@ async def handle_add_custom_datasource(
             credentials[f.name] = value
 
     # Prompt for any required non-secret fields not provided inline
-    for f, raw in zip(fields, raw_fields):
+    for f, raw in zip(fields, spec.fields):
         if f.secret:
             continue
         if not f.required:
@@ -436,7 +501,7 @@ async def handle_add_custom_datasource(
             credentials[f.name] = value
 
     # Offer to collect optional non-secret fields
-    for f, raw in zip(fields, raw_fields):
+    for f, raw in zip(fields, spec.fields):
         if f.secret or f.required or f.name in credentials:
             continue
         value = await prompt_or_cancel(f"(anton) {f.name} (optional — press Enter to skip)")

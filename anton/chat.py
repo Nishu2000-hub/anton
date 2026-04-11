@@ -50,6 +50,12 @@ from anton.commands.datasource import (
     handle_connect_datasource,
     handle_test_datasource,
 )
+from anton.commands.skills import (
+    handle_skill_remove,
+    handle_skill_save,
+    handle_skill_show,
+    handle_skills_list,
+)
 from anton.tools import CONNECT_DATASOURCE_TOOL, PUBLISH_TOOL
 from anton.utils.prompt import (
     prompt_or_cancel,
@@ -1247,6 +1253,32 @@ async def _chat_loop(
                     await handle_test_datasource(
                         console, session._scratchpads, arg
                     )
+                    continue
+                elif cmd == "/skill":
+                    # /skill save [name hint] | /skill show <label> | /skill remove <label>
+                    sub_parts = parts[1].strip().split(maxsplit=1) if len(parts) > 1 else []
+                    sub = sub_parts[0] if sub_parts else ""
+                    rest = sub_parts[1] if len(sub_parts) > 1 else ""
+                    if sub == "save":
+                        await handle_skill_save(
+                            console, session, name_hint=rest
+                        )
+                    elif sub == "show":
+                        handle_skill_show(console, rest)
+                    elif sub == "remove":
+                        handle_skill_remove(console, rest)
+                    elif sub == "list" or sub == "":
+                        handle_skills_list(console)
+                    else:
+                        console.print()
+                        console.print(
+                            "[anton.warning]Usage: /skill save [name] | "
+                            "/skill list | /skill show <label> | /skill remove <label>[/]"
+                        )
+                        console.print()
+                    continue
+                elif cmd == "/skills":
+                    handle_skills_list(console)
                     continue
                 elif cmd == "/resume":
                     session, resumed_id = await handle_resume(

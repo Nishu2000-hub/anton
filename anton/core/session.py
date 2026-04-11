@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from anton.core.llm.prompt_builder import ChatSystemPromptBuilder
+from anton.core.memory.cerebellum import Cerebellum
+from anton.core.memory.skills import SkillStore
+from anton.core.tools.recall_skill import RECALL_SKILL_TOOL
 from anton.core.llm.prompts import RESILIENCE_NUDGE
 from anton.core.llm.provider import (
     ContextOverflowError,
@@ -118,6 +121,23 @@ class ChatSession:
             workspace_path=config.workspace.base if config.workspace else None,
         )
         self.tool_registry = ToolRegistry()
+        # Procedural memory: brain-inspired skills (Stage 1 = declarative).
+        # Lives at ~/.anton/skills/<label>/. The recall_skill tool retrieves
+        # entries on demand and increments per-stage usage counters.
+        self._skill_store = SkillStore()
+        # Cerebellum: supervised error learning over scratchpad cells.
+        # Buffers errored/warning cells across the turn, runs one diff
+        # call at end-of-turn, and encodes lessons via cortex.encode().
+        # Wired into the dispatcher's observer list below.
+        self._cerebellum = Cerebellum(
+            cortex=self._cortex,
+            llm=self._llm,
+        )
+        # Scratchpad observers — list of objects with on_pre_execute /
+        # on_post_execute. Fired by handle_scratchpad around pad.execute.
+        # The runtime never sees this list; observation lives at the
+        # dispatcher layer to keep local/remote runtimes interchangeable.
+        self._scratchpad_observers: list = [self._cerebellum]
         self._explainability_store = (
             ExplainabilityStore(config.workspace.base) if config.workspace is not None else None
         )
@@ -284,6 +304,7 @@ class ChatSession:
             project_context=md_context,
             self_awareness_context=sa_section,
             datasource_context=ds_ctx,
+            skill_store=self._skill_store,
         )
 
         return prompt
@@ -373,6 +394,9 @@ class ChatSession:
 
         if self._episodic is not None and self._episodic.enabled:
             self.tool_registry.register_tool(RECALL_TOOL)
+
+        # Procedural memory retrieval — always available, no-op if no skills.
+        self.tool_registry.register_tool(RECALL_SKILL_TOOL)
 
     async def close(self) -> None:
         """Clean up scratchpads and other resources."""
@@ -491,6 +515,31 @@ class ChatSession:
             if pad._compact_cells():
                 compacted = True
         return compacted
+
+    def _schedule_cerebellum_flush(self) -> None:
+        """Fire the cerebellum's batched diff pass without blocking the turn.
+
+        The cerebellum buffered any errored / warning cells across the
+        turn via its observer hooks. Now we kick off the (at most one)
+        LLM diff call as a background task — the user gets their reply
+        immediately, and any extracted lessons get encoded into the
+        existing wisdom store before the next turn typically begins.
+
+        Best-effort: if there's no buffered work or no event loop, this
+        is a no-op. Exceptions in the background task are swallowed
+        because they're already logged inside cerebellum.flush().
+        """
+        cb = getattr(self, "_cerebellum", None)
+        if cb is None:
+            return
+        if cb.buffered_count == 0:
+            return
+        try:
+            asyncio.create_task(cb.flush())
+        except RuntimeError:
+            # No running loop (e.g. called from a sync context in tests).
+            # Cerebellum learning is best-effort, so just drop the buffer.
+            cb.reset()
 
     async def turn(self, user_input: str | list[dict]) -> str:
         self._history.append({"role": "user", "content": user_input})
@@ -620,6 +669,12 @@ class ChatSession:
         if self._cortex is not None and self._cortex.mode != "off":
             self._cortex.maybe_vacuum()
 
+        # Cerebellar consolidation — fire-and-forget so the user gets
+        # their reply immediately while supervised error learning runs
+        # in the background. Brain analogue: cerebellar plasticity
+        # operates in parallel with continued action, not blocking it.
+        self._schedule_cerebellum_flush()
+
         return reply
 
     async def turn_stream(
@@ -725,6 +780,11 @@ class ChatSession:
                 asyncio.create_task(self._cortex.maybe_update_identity(user_input))
             # Periodic memory vacuum (Systems Consolidation)
             self._cortex.maybe_vacuum()
+
+        # Cerebellar consolidation — same fire-and-forget contract as
+        # the non-streaming turn. Lets the user-facing stream finish
+        # immediately while supervised error learning runs in the background.
+        self._schedule_cerebellum_flush()
 
     async def _stream_and_handle_tools(
         self, user_message: str = ""

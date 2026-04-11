@@ -18,10 +18,10 @@ This mirrors the LLM-returns-JSON pattern already used by
 
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from pydantic import BaseModel, Field
 
 from anton.datasource_registry import AuthMethod, DatasourceEngine, DatasourceField
 
@@ -138,9 +138,60 @@ class ConnectionCollector:
 
 _SYSTEM_PROMPT = (
     "You extract structured connection credentials from user messages. "
-    "You are helping fill out a form for a specific datasource. "
-    "Return ONLY valid JSON — no commentary, no markdown fences."
+    "You are helping fill out a form for a specific datasource."
 )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM-facing schema (Pydantic) — used by LLMClient.generate_object
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _ExtractionResult(BaseModel):
+    """Structured output of extract_variables.
+
+    The LLM is forced to call a tool whose input matches this schema,
+    so the call site never has to parse JSON, strip markdown fences,
+    or guard against non-dict responses.
+    """
+
+    variables: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Mapping of canonical field name (snake_case) to extracted "
+            "value. Only include fields from the expected list above. "
+            "Recognize common aliases (hostname→host, pwd→password, "
+            "db→database, username→user) and map to the canonical name. "
+            "If the user pasted a connection string (e.g. "
+            "postgres://u:p@host:5432/db), extract host/port/user/"
+            "password/database from it. If the user just provided a "
+            "plain value for one field without naming it (e.g. typed "
+            "'localhost' when asked for host), leave this empty — the "
+            "caller will treat the raw text as the next field's value. "
+            "Never invent values."
+        ),
+    )
+    is_redirect: bool = Field(
+        default=False,
+        description=(
+            "True ONLY if the user is clearly trying to cancel or switch "
+            "to a DIFFERENT datasource (e.g. \"actually it's mysql\", "
+            "\"never mind\", \"cancel\"). Providing credentials is NOT "
+            "a redirect."
+        ),
+    )
+    redirect_engine: str = Field(
+        default="",
+        description=(
+            "If the user mentioned a different datasource by name (from "
+            "the 'other known slugs' list), set this to that slug. "
+            "Otherwise empty string."
+        ),
+    )
+    redirect_reason: str = Field(
+        default="",
+        description="Short phrase describing the redirect, or empty string.",
+    )
 
 
 async def extract_variables(
@@ -163,9 +214,12 @@ async def extract_variables(
     Trusts the LLM to handle aliases (hostname→host, pwd→password),
     connection strings (postgres://user:pass@host:5432/db), natural
     language ("my host is db.example.com"), and free-form redirect
-    phrasing ("actually let's do mysql instead"). Falls back to an empty
-    result on any parse error — callers should treat an empty result as
-    "treat the raw input as the next field's value".
+    phrasing ("actually let's do mysql instead").
+
+    Uses `LLMClient.generate_object` for forced-schema structured
+    output — no manual JSON parsing or fence stripping. Falls back to
+    an empty result on any LLM/validation error so the caller can
+    treat the raw input as the next field's value.
     """
     result = ExtractedData()
     text = (raw_input or "").strip()
@@ -185,71 +239,32 @@ async def extract_variables(
         f"Other known datasource slugs: {other_engines}\n\n"
         f"The user was asked to provide credentials and wrote:\n"
         f"{text!r}\n\n"
-        "Return ONLY valid JSON with this exact shape:\n"
-        '{\n'
-        '  "variables": {"<field_name>": "<value>", ...},\n'
-        '  "is_redirect": true or false,\n'
-        '  "redirect_engine": "<slug or empty string>",\n'
-        '  "redirect_reason": "<short phrase or empty string>"\n'
-        '}\n\n'
-        "Rules:\n"
-        "- Only include fields from the expected list above. Use the exact "
-        "field names (snake_case).\n"
-        "- Recognize common aliases (hostname→host, pwd→password, "
-        "db→database, username→user, etc.) and map to the canonical name.\n"
-        "- If the user pasted a connection string (e.g. "
-        "postgres://u:p@host:5432/db), extract host/port/user/password/"
-        "database from it.\n"
-        "- Set `is_redirect` to true ONLY if the user is clearly trying to "
-        "cancel or switch to a DIFFERENT datasource (e.g. \"actually it's "
-        "mysql\", \"never mind\", \"cancel\"). Providing credentials is NOT "
-        "a redirect.\n"
-        "- If they mention a different datasource by name (from the other "
-        "known slugs list), set `redirect_engine` to that slug.\n"
-        "- If the user just provided a plain value for one field (e.g. "
-        "typed \"localhost\" when asked for host), and did NOT mention a "
-        "field name, leave `variables` empty — the caller will treat the "
-        "raw text as the next field's value.\n"
-        "- Never invent values. Only extract what the user explicitly wrote."
+        "Extract any credential values, then determine whether the user is "
+        "trying to redirect to a different datasource."
     )
 
     try:
-        response = await session._llm.plan(
+        extraction: _ExtractionResult = await session._llm.generate_object(
+            _ExtractionResult,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
             max_tokens=512,
         )
-        content = (response.content or "").strip()
-        # Strip optional markdown fences, same pattern as
-        # handle_add_custom_datasource().
-        content = re.sub(
-            r"^```[^\n]*\n|```\s*$", "", content, flags=re.MULTILINE
-        ).strip()
-        data = json.loads(content)
     except Exception:
         return result
 
-    if not isinstance(data, dict):
-        return result
+    # Filter and normalize variables — only keep keys that match the
+    # expected field list (the LLM might hallucinate field names).
+    valid_names = {f.name for f in expected_fields}
+    for k, v in extraction.variables.items():
+        key = str(k).strip()
+        value = str(v).strip()
+        if key in valid_names and value:
+            result.variables[key] = value
 
-    raw_vars = data.get("variables") or {}
-    if isinstance(raw_vars, dict):
-        valid_names = {f.name for f in expected_fields}
-        for k, v in raw_vars.items():
-            if not isinstance(v, (str, int, float)):
-                continue
-            key = str(k).strip()
-            if key in valid_names:
-                value = str(v).strip()
-                if value:
-                    result.variables[key] = value
-
-    result.is_redirect = bool(data.get("is_redirect"))
-    redirect_engine = data.get("redirect_engine")
-    if isinstance(redirect_engine, str) and redirect_engine.strip():
-        result.redirect_engine = redirect_engine.strip()
-    redirect_reason = data.get("redirect_reason")
-    if isinstance(redirect_reason, str):
-        result.redirect_reason = redirect_reason.strip()
+    result.is_redirect = extraction.is_redirect
+    if extraction.redirect_engine.strip():
+        result.redirect_engine = extraction.redirect_engine.strip()
+    result.redirect_reason = extraction.redirect_reason.strip()
 
     return result

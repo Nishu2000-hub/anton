@@ -1,10 +1,59 @@
 from __future__ import annotations
+
+import logging
 from typing import TYPE_CHECKING
 
+from anton.core.backends.base import Cell
 from anton.core.utils.scratchpad import prepare_scratchpad_exec, format_cell_result
 
 if TYPE_CHECKING:
     from anton.chat_session import ChatSession
+
+
+_log = logging.getLogger(__name__)
+
+
+async def _fire_pre_execute(session: "ChatSession", cell: Cell) -> None:
+    """Notify pre-execute observers (e.g. cerebellum) before a cell runs.
+
+    Best-effort: a buggy observer never kills a cell. The list of
+    observers is owned by the session — typically populated in
+    ChatSession.__init__. Empty list (or attribute missing) means no
+    observers and this is a no-op.
+    """
+    observers = getattr(session, "_scratchpad_observers", None) or []
+    for obs in observers:
+        on_pre = getattr(obs, "on_pre_execute", None)
+        if on_pre is None:
+            continue
+        try:
+            await on_pre(cell)
+        except Exception as exc:
+            _log.warning(
+                "scratchpad pre-execute observer %s failed: %s",
+                type(obs).__name__,
+                exc,
+            )
+
+
+async def _fire_post_execute(session: "ChatSession", cell: Cell) -> None:
+    """Notify post-execute observers (e.g. cerebellum) after a cell finishes.
+
+    Same best-effort contract as `_fire_pre_execute`.
+    """
+    observers = getattr(session, "_scratchpad_observers", None) or []
+    for obs in observers:
+        on_post = getattr(obs, "on_post_execute", None)
+        if on_post is None:
+            continue
+        try:
+            await on_post(cell)
+        except Exception as exc:
+            _log.warning(
+                "scratchpad post-execute observer %s failed: %s",
+                type(obs).__name__,
+                exc,
+            )
 
 
 async def handle_recall(session: ChatSession, tc_input: dict) -> str:
@@ -102,6 +151,20 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
             return result
         pad, code, description, estimated_time, estimated_seconds = result
 
+        # Notify pre-execute observers (e.g. cerebellum). The runtime
+        # never sees these — observation is an orchestration concern,
+        # so it lives at the dispatcher layer where the data is most
+        # natural and where local/remote runtimes stay interchangeable.
+        prelim_cell = Cell(
+            code=code,
+            stdout="",
+            stderr="",
+            error=None,
+            description=description,
+            estimated_time=estimated_time or str(estimated_seconds),
+        )
+        await _fire_pre_execute(session, prelim_cell)
+
         cell = await pad.execute(
             code,
             description=description,
@@ -112,6 +175,7 @@ async def handle_scratchpad(session: ChatSession, tc_input: dict) -> str:
             session._record_cell_explainability(
                 pad_name=name, description=description, cell=cell,
             )
+            await _fire_post_execute(session, cell)
         return format_cell_result(cell)
 
     elif action == "view":

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -8,6 +7,7 @@ import pytest
 from anton.connect_collector import (
     ConnectionCollector,
     ExtractedData,
+    _ExtractionResult,
     extract_variables,
 )
 from anton.datasource_registry import AuthMethod, DatasourceEngine, DatasourceField
@@ -59,13 +59,31 @@ def _hubspot_choice_engine() -> DatasourceEngine:
     )
 
 
-def _mock_session_with_plan_response(content: str) -> MagicMock:
-    """Build a session mock whose `_llm.plan()` returns the given JSON content."""
+def _mock_session_with_extraction(
+    *,
+    variables: dict[str, str] | None = None,
+    is_redirect: bool = False,
+    redirect_engine: str = "",
+    redirect_reason: str = "",
+) -> MagicMock:
+    """Build a session whose `_llm.generate_object` returns a known result."""
+    extraction = _ExtractionResult(
+        variables=variables or {},
+        is_redirect=is_redirect,
+        redirect_engine=redirect_engine,
+        redirect_reason=redirect_reason,
+    )
     session = MagicMock()
-    plan_response = MagicMock()
-    plan_response.content = content
     session._llm = MagicMock()
-    session._llm.plan = AsyncMock(return_value=plan_response)
+    session._llm.generate_object = AsyncMock(return_value=extraction)
+    return session
+
+
+def _mock_session_raising(exc: Exception) -> MagicMock:
+    """Build a session whose `_llm.generate_object` raises the given exception."""
+    session = MagicMock()
+    session._llm = MagicMock()
+    session._llm.generate_object = AsyncMock(side_effect=exc)
     return session
 
 
@@ -186,7 +204,7 @@ class TestExtractVariables:
     @pytest.mark.asyncio
     async def test_empty_input_returns_empty(self):
         engine = _postgres_engine()
-        session = _mock_session_with_plan_response("{}")
+        session = _mock_session_with_extraction()
         result = await extract_variables(
             "",
             expected_fields=engine.fields,
@@ -198,24 +216,17 @@ class TestExtractVariables:
         assert result.variables == {}
         assert not result.is_redirect
         # Empty input shouldn't even call the LLM
-        session._llm.plan.assert_not_called()
+        session._llm.generate_object.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_llm_extracts_variables_from_bulk_input(self):
         engine = _postgres_engine()
-        session = _mock_session_with_plan_response(
-            json.dumps(
-                {
-                    "variables": {
-                        "host": "db.example.com",
-                        "port": "5432",
-                        "user": "admin",
-                    },
-                    "is_redirect": False,
-                    "redirect_engine": "",
-                    "redirect_reason": "",
-                }
-            )
+        session = _mock_session_with_extraction(
+            variables={
+                "host": "db.example.com",
+                "port": "5432",
+                "user": "admin",
+            },
         )
         result = await extract_variables(
             "host=db.example.com port=5432 user=admin",
@@ -233,23 +244,33 @@ class TestExtractVariables:
         assert not result.is_redirect
 
     @pytest.mark.asyncio
+    async def test_passes_extraction_result_schema_to_llm(self):
+        """Verify generate_object was called with the right schema class."""
+        engine = _postgres_engine()
+        session = _mock_session_with_extraction(variables={"host": "db.x"})
+        await extract_variables(
+            "host=db.x",
+            expected_fields=engine.fields,
+            current_engine="postgres",
+            current_engine_display="PostgreSQL",
+            known_engine_slugs=["postgres"],
+            session=session,
+        )
+        session._llm.generate_object.assert_called_once()
+        call_args = session._llm.generate_object.call_args
+        assert call_args.args[0] is _ExtractionResult
+
+    @pytest.mark.asyncio
     async def test_llm_parses_connection_string(self):
         engine = _postgres_engine()
-        session = _mock_session_with_plan_response(
-            json.dumps(
-                {
-                    "variables": {
-                        "host": "db.example.com",
-                        "port": "5432",
-                        "user": "admin",
-                        "password": "secret",
-                        "database": "mydb",
-                    },
-                    "is_redirect": False,
-                    "redirect_engine": "",
-                    "redirect_reason": "",
-                }
-            )
+        session = _mock_session_with_extraction(
+            variables={
+                "host": "db.example.com",
+                "port": "5432",
+                "user": "admin",
+                "password": "secret",
+                "database": "mydb",
+            },
         )
         result = await extract_variables(
             "postgres://admin:secret@db.example.com:5432/mydb",
@@ -267,19 +288,12 @@ class TestExtractVariables:
     @pytest.mark.asyncio
     async def test_llm_resolves_aliases(self):
         engine = _postgres_engine()
-        session = _mock_session_with_plan_response(
-            json.dumps(
-                {
-                    "variables": {
-                        "host": "db.x",
-                        "user": "admin",
-                        "password": "secret",
-                    },
-                    "is_redirect": False,
-                    "redirect_engine": "",
-                    "redirect_reason": "",
-                }
-            )
+        session = _mock_session_with_extraction(
+            variables={
+                "host": "db.x",
+                "user": "admin",
+                "password": "secret",
+            },
         )
         result = await extract_variables(
             "hostname=db.x username=admin pwd=secret",
@@ -298,15 +312,11 @@ class TestExtractVariables:
     @pytest.mark.asyncio
     async def test_llm_detects_redirect(self):
         engine = _postgres_engine()
-        session = _mock_session_with_plan_response(
-            json.dumps(
-                {
-                    "variables": {},
-                    "is_redirect": True,
-                    "redirect_engine": "mysql",
-                    "redirect_reason": "user wants mysql instead",
-                }
-            )
+        session = _mock_session_with_extraction(
+            variables={},
+            is_redirect=True,
+            redirect_engine="mysql",
+            redirect_reason="user wants mysql instead",
         )
         result = await extract_variables(
             "actually let's use mysql instead",
@@ -323,18 +333,11 @@ class TestExtractVariables:
     @pytest.mark.asyncio
     async def test_llm_ignores_fields_not_in_expected_list(self):
         engine = _postgres_engine()
-        session = _mock_session_with_plan_response(
-            json.dumps(
-                {
-                    "variables": {
-                        "host": "db.x",
-                        "bogus_field": "should be dropped",
-                    },
-                    "is_redirect": False,
-                    "redirect_engine": "",
-                    "redirect_reason": "",
-                }
-            )
+        session = _mock_session_with_extraction(
+            variables={
+                "host": "db.x",
+                "bogus_field": "should be dropped",
+            },
         )
         result = await extract_variables(
             "host=db.x bogus=y",
@@ -348,46 +351,9 @@ class TestExtractVariables:
         assert "bogus_field" not in result.variables
 
     @pytest.mark.asyncio
-    async def test_llm_strips_markdown_fences(self):
-        engine = _postgres_engine()
-        session = _mock_session_with_plan_response(
-            '```json\n{"variables": {"host": "db.x"}, '
-            '"is_redirect": false, "redirect_engine": "", '
-            '"redirect_reason": ""}\n```'
-        )
-        result = await extract_variables(
-            "host=db.x",
-            expected_fields=engine.fields,
-            current_engine="postgres",
-            current_engine_display="PostgreSQL",
-            known_engine_slugs=["postgres"],
-            session=session,
-        )
-        assert result.variables == {"host": "db.x"}
-
-    @pytest.mark.asyncio
-    async def test_invalid_json_returns_empty_result(self):
-        engine = _postgres_engine()
-        session = _mock_session_with_plan_response("this is not JSON at all")
-        result = await extract_variables(
-            "some input",
-            expected_fields=engine.fields,
-            current_engine="postgres",
-            current_engine_display="PostgreSQL",
-            known_engine_slugs=["postgres"],
-            session=session,
-        )
-        # Invalid JSON is caught → empty result, caller will fall back
-        # to treating the raw text as the next field's value
-        assert result.variables == {}
-        assert not result.is_redirect
-
-    @pytest.mark.asyncio
     async def test_llm_exception_returns_empty_result(self):
         engine = _postgres_engine()
-        session = MagicMock()
-        session._llm = MagicMock()
-        session._llm.plan = AsyncMock(side_effect=RuntimeError("network error"))
+        session = _mock_session_raising(RuntimeError("network error"))
         result = await extract_variables(
             "host=db.x",
             expected_fields=engine.fields,
@@ -401,27 +367,26 @@ class TestExtractVariables:
         assert not result.is_redirect
 
     @pytest.mark.asyncio
-    async def test_coerces_numeric_values_to_strings(self):
+    async def test_validation_error_returns_empty_result(self):
+        """If generate_object raises a Pydantic ValidationError (rare with
+        forced tool_choice, but possible), we fall back to empty result."""
+        from pydantic import ValidationError as _PVE
+
         engine = _postgres_engine()
-        session = _mock_session_with_plan_response(
-            json.dumps(
-                {
-                    "variables": {"port": 5432},  # LLM returned int
-                    "is_redirect": False,
-                    "redirect_engine": "",
-                    "redirect_reason": "",
-                }
-            )
-        )
+        try:
+            _ExtractionResult.model_validate({"variables": "not a dict"})
+        except _PVE as exc:
+            session = _mock_session_raising(exc)
         result = await extract_variables(
-            "port is 5432",
+            "anything",
             expected_fields=engine.fields,
             current_engine="postgres",
             current_engine_display="PostgreSQL",
             known_engine_slugs=["postgres"],
             session=session,
         )
-        assert result.variables == {"port": "5432"}
+        assert result.variables == {}
+        assert not result.is_redirect
 
 
 # ─────────────────────────────────────────────────────────────────────────────

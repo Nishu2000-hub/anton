@@ -135,6 +135,12 @@ if _scratchpad_model:
                 Uses tool_choice to force the LLM to return structured data.
                 Supports single models and list[Model].
 
+                The schema-building and unwrapping logic is shared with
+                `LLMClient.generate_object` (in the main process) via
+                `anton.core.llm.structured` — only the actual provider
+                call differs between the two runtime contexts (sync
+                subprocess here, async planning there).
+
                 Args:
                     schema_class: A Pydantic BaseModel subclass, or list[Model].
                     system: System prompt.
@@ -144,49 +150,29 @@ if _scratchpad_model:
                 Returns:
                     An instance of schema_class (or a list of instances).
                 """
-                from pydantic import BaseModel as _BaseModel
-
-                is_list = (
-                    hasattr(schema_class, "__origin__")
-                    and schema_class.__origin__ is list
+                from anton.core.llm.structured import (
+                    build_structured_tool,
+                    unwrap_structured_response,
                 )
-                if is_list:
-                    inner_class = schema_class.__args__[0]
 
-                    class _ArrayWrapper(_BaseModel):
-                        items: list[inner_class]
-
-                    schema = _ArrayWrapper.model_json_schema()
-                    tool_name = f"{inner_class.__name__}_array"
-                else:
-                    schema = schema_class.model_json_schema()
-                    tool_name = schema_class.__name__
-
-                tool = {
-                    "name": tool_name,
-                    "description": f"Generate structured output matching the {tool_name} schema.",
-                    "input_schema": schema,
-                }
+                tool, validator_class, is_list = build_structured_tool(
+                    schema_class
+                )
 
                 response = self.complete(
                     system=system,
                     messages=messages,
                     tools=[tool],
-                    tool_choice={"type": "tool", "name": tool_name},
+                    tool_choice={"type": "tool", "name": tool["name"]},
                     max_tokens=max_tokens,
                 )
 
                 if not response.tool_calls:
                     raise ValueError("LLM did not return structured output.")
 
-                import json as _json
-
-                raw = response.tool_calls[0].input
-
-                if is_list:
-                    wrapper = _ArrayWrapper.model_validate(raw)
-                    return wrapper.items
-                return schema_class.model_validate(raw)
+                return unwrap_structured_response(
+                    response.tool_calls[0].input, validator_class, is_list
+                )
 
         _scratchpad_llm_instance = _ScratchpadLLM()
 

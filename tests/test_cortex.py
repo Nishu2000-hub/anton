@@ -150,12 +150,16 @@ class TestMaybeUpdateIdentity:
         mock_llm = AsyncMock()
         cortex = Cortex(global_hc=Hippocampus(g), project_hc=Hippocampus(p), mode="off", llm_client=mock_llm)
         await cortex.maybe_update_identity("I'm Jorge")
-        mock_llm.code.assert_not_called()
+        mock_llm.generate_object_code.assert_not_called()
 
     async def test_extracts_identity(self, dirs):
+        from anton.core.memory.cortex import _IdentityFacts
+
         g, p = dirs
         mock_llm = AsyncMock()
-        mock_llm.code = AsyncMock(return_value=type("R", (), {"content": '["Name: Jorge"]'})())
+        mock_llm.generate_object_code = AsyncMock(
+            return_value=_IdentityFacts(facts=["Name: Jorge"])
+        )
         cortex = Cortex(global_hc=Hippocampus(g), project_hc=Hippocampus(p), mode="copilot", llm_client=mock_llm)
         await cortex.maybe_update_identity("Hi, I'm Jorge")
         assert (g / "profile.md").exists()

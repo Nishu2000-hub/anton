@@ -143,13 +143,35 @@ def registry(datasources_md):
 
 @pytest.fixture()
 def make_session():
-    """Factory that creates a fresh ChatSession with mocked scratchpads."""
+    """Factory that creates a fresh ChatSession with mocked scratchpads.
+
+    The default `generate_object` dispatcher returns a sensible empty
+    instance for whichever Pydantic schema the production code asks
+    for. Tests that need a non-empty result should override
+    `session._llm.generate_object` after construction.
+    """
 
     def _factory():
+        from anton.connect_collector import _ExtractionResult
+
+        async def _default_generate_object(schema_class, **kwargs):
+            # Known extraction schemas → empty defaults so the call
+            # falls back to "no structured data" behavior. Unknown
+            # schemas → raise so the caller's try/except sees a clear
+            # failure (matching the pre-refactor behavior where
+            # json.loads would fail on the canned "UNKNOWN" content).
+            if schema_class is _ExtractionResult:
+                return _ExtractionResult()
+            raise RuntimeError(
+                f"test mock has no default for {schema_class.__name__}; "
+                "override session._llm.generate_object in this test"
+            )
+
         mock_llm = AsyncMock()
         plan_response = MagicMock()
         plan_response.content = "UNKNOWN"
         mock_llm.plan = AsyncMock(return_value=plan_response)
+        mock_llm.generate_object = AsyncMock(side_effect=_default_generate_object)
         session = ChatSession(ChatSessionConfig(llm_client=mock_llm))
         session._scratchpads = AsyncMock()
         return session
@@ -768,14 +790,23 @@ class TestHandleConnectDatasource:
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        # Mock the LLM to return a structured extraction for the paste
-        extract_response = MagicMock()
-        extract_response.content = (
-            '{"variables": {"host": "db.example.com", "port": "5432", '
-            '"database": "prod_db", "user": "alice", "password": "s3cr3t"}, '
-            '"is_redirect": false, "redirect_engine": "", "redirect_reason": ""}'
+        # Mock the LLM to return a structured extraction for the paste.
+        # connect_collector.extract_variables now uses generate_object
+        # with a Pydantic schema, so the mock returns the typed object.
+        from anton.connect_collector import _ExtractionResult
+        extract_response = _ExtractionResult(
+            variables={
+                "host": "db.example.com",
+                "port": "5432",
+                "database": "prod_db",
+                "user": "alice",
+                "password": "s3cr3t",
+            },
+            is_redirect=False,
+            redirect_engine="",
+            redirect_reason="",
         )
-        session._llm.plan = AsyncMock(return_value=extract_response)
+        session._llm.generate_object = AsyncMock(return_value=extract_response)
 
         pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
@@ -1049,15 +1080,21 @@ class TestHandleConnectDatasource:
         console = MagicMock()
         vault = DataVault(vault_dir=vault_dir)
 
-        # Mock the LLM to return a structured JSON extraction when it sees
-        # the bulk key=value string.
-        bulk_response = MagicMock()
-        bulk_response.content = (
-            '{"variables": {"host": "db.example.com", "port": "5432", '
-            '"database": "prod_db", "user": "alice"}, '
-            '"is_redirect": false, "redirect_engine": "", "redirect_reason": ""}'
+        # Mock the LLM extraction to return a typed Pydantic result
+        # (connect_collector now uses generate_object with a schema).
+        from anton.connect_collector import _ExtractionResult
+        bulk_response = _ExtractionResult(
+            variables={
+                "host": "db.example.com",
+                "port": "5432",
+                "database": "prod_db",
+                "user": "alice",
+            },
+            is_redirect=False,
+            redirect_engine="",
+            redirect_reason="",
         )
-        session._llm.plan = AsyncMock(return_value=bulk_response)
+        session._llm.generate_object = AsyncMock(return_value=bulk_response)
 
         pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
@@ -2107,11 +2144,19 @@ class TestStaleDsRegistrationState:
 class TestAddCustomDatasourceFlow:
     """Tests for _handle_add_custom_datasource field-collection logic."""
 
-    def _make_llm_response(self, fields: list[dict], display_name: str = "MyDB") -> str:
-        """Return a JSON string mimicking the LLM's plan() response."""
-        import json as _json
+    def _make_spec(self, fields: list[dict], display_name: str = "MyDB"):
+        """Return a _CustomDatasourceSpec instance mimicking the LLM's response."""
+        from anton.commands.datasource import (
+            _CustomDatasourceField,
+            _CustomDatasourceSpec,
+        )
 
-        return _json.dumps({"display_name": display_name, "pip": "", "fields": fields})
+        return _CustomDatasourceSpec(
+            display_name=display_name,
+            pip="",
+            test_snippet="",
+            fields=[_CustomDatasourceField(**f) for f in fields],
+        )
 
     def _make_registry(self, tmp_path):
         """Return a minimal registry mock that accepts any slug."""
@@ -2121,12 +2166,10 @@ class TestAddCustomDatasourceFlow:
         reg.get.return_value = None  # triggers inline fallback
         return reg
 
-    def _make_llm(self, json_text: str):
-        """Return an AsyncMock LLM whose plan() returns json_text."""
+    def _make_llm(self, spec):
+        """Return an AsyncMock LLM whose generate_object() returns the spec."""
         llm = AsyncMock()
-        response = MagicMock()
-        response.content = json_text
-        llm.plan = AsyncMock(return_value=response)
+        llm.generate_object = AsyncMock(return_value=spec)
         return llm
 
     def _mock_ds_path(self, mock_path_cls, tmp_path):
@@ -2140,7 +2183,7 @@ class TestAddCustomDatasourceFlow:
         """Required non-secret field without inline value triggers Prompt.ask."""
         session = make_session()
         session._llm = self._make_llm(
-            self._make_llm_response(
+            self._make_spec(
                 [
                     {
                         "name": "host",
@@ -2180,7 +2223,7 @@ class TestAddCustomDatasourceFlow:
         """Required secret field without inline value triggers password prompt."""
         session = make_session()
         session._llm = self._make_llm(
-            self._make_llm_response(
+            self._make_spec(
                 [
                     {
                         "name": "api_key",
@@ -2218,7 +2261,7 @@ class TestAddCustomDatasourceFlow:
         """Empty responses for all required fields causes a hard stop (None)."""
         session = make_session()
         session._llm = self._make_llm(
-            self._make_llm_response(
+            self._make_spec(
                 [
                     {
                         "name": "host",
@@ -2264,21 +2307,22 @@ class TestCustomDatasourceConnectFlow:
 
     # ── helpers (mirrors TestAddCustomDatasourceFlow) ────────────────────
 
-    def _make_llm_response(
+    def _make_spec(
         self,
         fields: list[dict],
         display_name: str = "My API Service",
         test_snippet: str = "",
-    ) -> str:
-        import json as _json
+    ):
+        from anton.commands.datasource import (
+            _CustomDatasourceField,
+            _CustomDatasourceSpec,
+        )
 
-        return _json.dumps(
-            {
-                "display_name": display_name,
-                "pip": "",
-                "test_snippet": test_snippet,
-                "fields": fields,
-            }
+        return _CustomDatasourceSpec(
+            display_name=display_name,
+            pip="",
+            test_snippet=test_snippet,
+            fields=[_CustomDatasourceField(**f) for f in fields],
         )
 
     def _make_registry(self, tmp_path):
@@ -2291,11 +2335,9 @@ class TestCustomDatasourceConnectFlow:
         reg.get.return_value = None  # triggers inline fallback engine_def
         return reg
 
-    def _make_llm(self, json_text: str):
+    def _make_llm(self, spec):
         llm = AsyncMock()
-        response = MagicMock()
-        response.content = json_text
-        llm.plan = AsyncMock(return_value=response)
+        llm.generate_object = AsyncMock(return_value=spec)
         return llm
 
     def _mock_ds_path(self, mock_path_cls, tmp_path):
@@ -2313,7 +2355,7 @@ class TestCustomDatasourceConnectFlow:
         pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
         session._llm = self._make_llm(
-            self._make_llm_response(
+            self._make_spec(
                 [
                     {
                         "name": "api_key",
@@ -2369,7 +2411,7 @@ class TestCustomDatasourceConnectFlow:
         pad = make_pad(make_cell(stdout="", stderr="connection refused"))
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
         session._llm = self._make_llm(
-            self._make_llm_response(
+            self._make_spec(
                 [
                     {
                         "name": "api_key",
@@ -2422,7 +2464,7 @@ class TestCustomDatasourceConnectFlow:
         ])
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
         session._llm = self._make_llm(
-            self._make_llm_response(
+            self._make_spec(
                 [
                     {
                         "name": "api_key",
@@ -2484,7 +2526,7 @@ class TestCustomDatasourceConnectFlow:
         pad = make_pad()
         session._scratchpads.get_or_create = AsyncMock(return_value=pad)
         session._llm = self._make_llm(
-            self._make_llm_response(
+            self._make_spec(
                 [
                     {
                         "name": "api_key",
