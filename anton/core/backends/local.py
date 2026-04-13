@@ -46,23 +46,23 @@ class LocalScratchpadRuntime(ScratchpadRuntime):
         self,
         name: str,
         *,
+        coding_provider: str,
+        coding_model: str,
+        coding_api_key: str,
+        coding_base_url: str,
         cells: list[Cell] | None = None,
-        coding_provider: str = "anthropic",
-        coding_model: str = "",
-        coding_api_key: str = "",
-        coding_base_url: str = "",
         workspace_path: Path | None = None,
         _venvs_base: Path | None = None,
     ) -> None:
         super().__init__(
             name,
-            cells=cells,
             coding_provider=coding_provider,
             coding_model=coding_model,
             coding_api_key=coding_api_key,
+            coding_base_url=coding_base_url,
+            cells=cells,
             workspace_path=workspace_path,
         )
-        self._coding_base_url = coding_base_url
         self._proc: asyncio.subprocess.Process | None = None
         self._boot_path: str | None = None
         self._venv_dir: str | None = None
