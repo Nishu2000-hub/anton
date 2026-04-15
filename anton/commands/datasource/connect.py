@@ -122,7 +122,7 @@ async def handle_connect_datasource(
         _settings = None
 
     def _telemetry(event_name: str, engine: str = "") -> None:
-        if _settings:
+        if _settings and not from_tool_call:
             from anton.analytics import send_event
             send_event(_settings, event_name, engine=engine)
 
